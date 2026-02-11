@@ -1,0 +1,157 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Extraction Module Configuration Schema
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: "1.0.0"
+
+# ── LLM Provider ──────────────────────────────────────────────────────────────
+llm:
+  provider: "google-gemini"
+  model: "gemini-3-flash-preview"
+  temperature: 0.0            # deterministic for idempotency
+  max_output_tokens: 8192
+  timeout_seconds: 60
+
+# ── Extraction Fields ─────────────────────────────────────────────────────────
+fields:
+  - name: vendor
+    type: string
+    required: true
+    validation:
+      min_length: 1
+      max_length: 256
+    confidence_threshold: 0.80
+
+  - name: invoice_number
+    type: string
+    required: true
+    validation:
+      pattern: "^[A-Za-z0-9\\-\\/]+$"
+    confidence_threshold: 0.85
+
+  - name: date
+    type: date
+    required: true
+    validation:
+      format: "YYYY-MM-DD"
+    confidence_threshold: 0.80
+
+  - name: due_date
+    type: date
+    required: false
+    validation:
+      format: "YYYY-MM-DD"
+    confidence_threshold: 0.70
+
+  - name: subtotal
+    type: float
+    required: false
+    validation:
+      min: 0
+    confidence_threshold: 0.75
+
+  - name: tax_rate
+    type: float
+    required: false
+    validation:
+      min: 0
+      max: 100
+    confidence_threshold: 0.70
+
+  - name: tax_amount
+    type: float
+    required: false
+    validation:
+      min: 0
+    confidence_threshold: 0.75
+
+  - name: total
+    type: float
+    required: true
+    validation:
+      min: 0
+    confidence_threshold: 0.85
+
+  - name: currency
+    type: string
+    required: false
+    validation:
+      enum: [USD, EUR, GBP, CHF, JPY, CAD, AUD]
+    confidence_threshold: 0.80
+
+  - name: line_items
+    type: array
+    required: false
+    items:
+      - name: item
+        type: string
+        required: true
+      - name: quantity
+        type: integer
+        required: true
+        validation:
+          min: 0
+      - name: unit_price
+        type: float
+        required: true
+        validation:
+          min: 0
+      - name: total
+        type: float
+        required: true
+        validation:
+          min: 0
+    confidence_threshold: 0.70
+
+# ── Idempotency ───────────────────────────────────────────────────────────────
+idempotency:
+  enabled: true
+  hash_algorithm: "sha256"
+  cache_ttl_hours: 720        # 30 days
+  skip_locked_fields: true    # never overwrite manually corrected data
+
+# ── Field Preservation ────────────────────────────────────────────────────────
+field_preservation:
+  respect_manual_corrections: true
+  lock_on_correction: true
+  audit_trail: true
+
+# ── Output Formats ────────────────────────────────────────────────────────────
+output:
+  formats:
+    - type: parquet
+      path_template: "data/parquet/{year}/{month}/{day}/{document_id}.parquet"
+      compression: snappy
+    - type: json
+      path_template: "data/json/{year}/{month}/{day}/{document_id}.json"
+      indent: 2
+  schema_version: "1.0.0"
+  validate_before_write: true
+  atomic_writes: true         # write to temp then rename
+
+# ── Processing ────────────────────────────────────────────────────────────────
+processing:
+  max_concurrent: 10
+  retry:
+    max_attempts: 3
+    backoff_base_seconds: 10
+    jitter: true
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_seconds: 60
+  timeout_seconds: 300
+
+# ── Validation Rules ──────────────────────────────────────────────────────────
+validation:
+  cross_field:
+    - rule: "tax_amount ≈ subtotal * tax_rate / 100"
+      tolerance: 0.02          # 2 % tolerance
+    - rule: "total ≈ subtotal + tax_amount"
+      tolerance: 0.02
+    - rule: "sum(line_items.total) ≈ subtotal"
+      tolerance: 0.05
+  required_fields_for_approval:
+    - vendor
+    - invoice_number
+    - date
+    - total

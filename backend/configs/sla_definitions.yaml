@@ -1,0 +1,73 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SLA Definitions – Document Processing Platform
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Each SLA defines a metric, threshold, evaluation window, and severity.
+# The monitoring service evaluates these continuously and raises alerts
+# when thresholds are breached.
+
+version: "1.0.0"
+
+slas:
+  - name: Latency
+    metric: p95_latency_seconds
+    description: "P95 single-document processing latency"
+    threshold: 30
+    comparison: lt           # current value must be LESS THAN threshold
+    window_minutes: 5
+    severity: critical
+    action: "Page on-call engineer; scale up workers"
+
+  - name: Throughput
+    metric: docs_per_hour
+    description: "Sustained document processing rate"
+    threshold: 4500
+    comparison: gt           # current value must be GREATER THAN threshold
+    window_minutes: 15
+    severity: warning
+    action: "Check Celery worker pool; verify Gemini API quota"
+
+  - name: Error Rate
+    metric: error_rate_percent
+    description: "Percentage of failed extractions"
+    threshold: 1.0
+    comparison: lt
+    window_minutes: 5
+    severity: critical
+    action: "Check Gemini API health; review recent error logs"
+
+  - name: Queue Depth
+    metric: review_queue_depth
+    description: "Number of items awaiting human review"
+    threshold: 500
+    comparison: lt
+    window_minutes: 5
+    severity: warning
+    action: "Alert review team lead; consider auto-approve for high-confidence items"
+
+  - name: SLA Breach Rate
+    metric: sla_breach_percent
+    description: "Percentage of documents that breached their review SLA"
+    threshold: 0.1
+    comparison: lt
+    window_minutes: 60
+    severity: critical
+    action: "Emergency triage; re-prioritise queue; add reviewers"
+
+# ── Alert channels ────────────────────────────────────────────────────────────
+alerting:
+  channels:
+    - type: console
+      enabled: true
+    - type: webhook
+      enabled: false
+      url: "https://hooks.example.com/alerts"
+    - type: email
+      enabled: false
+      recipients:
+        - oncall@company.com
+
+  escalation:
+    warning_repeat_minutes: 30
+    critical_repeat_minutes: 10
+    auto_resolve_after_minutes: 15

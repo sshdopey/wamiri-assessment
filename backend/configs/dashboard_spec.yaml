@@ -1,0 +1,109 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Monitoring Dashboard Specification
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Defines the panels, metrics, and layout for the ops monitoring dashboard.
+# Compatible with Grafana JSON model or custom rendering.
+
+version: "1.0.0"
+
+dashboard:
+  title: "Document Processing – Operations"
+  refresh_interval_seconds: 30
+  time_range: "last_1h"
+
+  rows:
+    # ── Row 1: Key Metrics ────────────────────────────────────────────────
+    - title: "Key Metrics"
+      panels:
+        - title: "P95 Latency"
+          type: gauge
+          metric: p95_latency_seconds
+          thresholds:
+            - value: 0
+              color: green
+            - value: 20
+              color: yellow
+            - value: 30
+              color: red
+          unit: seconds
+
+        - title: "Throughput"
+          type: gauge
+          metric: docs_per_hour
+          thresholds:
+            - value: 0
+              color: red
+            - value: 4500
+              color: yellow
+            - value: 5000
+              color: green
+          unit: docs/hr
+
+        - title: "Error Rate"
+          type: gauge
+          metric: error_rate_percent
+          thresholds:
+            - value: 0
+              color: green
+            - value: 0.5
+              color: yellow
+            - value: 1.0
+              color: red
+          unit: "%"
+
+        - title: "Queue Depth"
+          type: stat
+          metric: review_queue_depth
+          thresholds:
+            - value: 0
+              color: green
+            - value: 300
+              color: yellow
+            - value: 500
+              color: red
+
+    # ── Row 2: Time Series ────────────────────────────────────────────────
+    - title: "Processing Trends"
+      panels:
+        - title: "Processing Duration (P50 / P95 / P99)"
+          type: timeseries
+          metrics:
+            - document_processing_seconds
+          display: histogram
+
+        - title: "Documents Processed"
+          type: timeseries
+          metrics:
+            - documents_processed_total
+          display: counter
+
+    # ── Row 3: Confidence & Quality ───────────────────────────────────────
+    - title: "Extraction Quality"
+      panels:
+        - title: "Confidence Distribution"
+          type: histogram
+          metric: extraction_confidence_score
+
+        - title: "Review Duration"
+          type: histogram
+          metric: review_duration_seconds
+
+    # ── Row 4: SLA Compliance ─────────────────────────────────────────────
+    - title: "SLA Compliance"
+      panels:
+        - title: "SLA Breaches"
+          type: timeseries
+          metrics:
+            - sla_breaches_total
+          labels: ["severity"]
+
+        - title: "Active Alerts"
+          type: table
+          data_source: sla_check_results
+          columns:
+            - sla_name
+            - current_value
+            - threshold
+            - severity
+            - timestamp
