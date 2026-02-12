@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 python:3.13-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 COPY pyproject.toml uv.lock* ./
 
 # Install dependencies
-RUN uv sync --frozen --no-dev --compile-bytecode
+RUN uv sync --no-dev --compile-bytecode
 
 # Copy source
 COPY src/ src/

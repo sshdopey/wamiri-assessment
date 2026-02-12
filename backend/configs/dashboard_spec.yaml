@@ -1,109 +1,121 @@
-# ──────────────────────────────────────────────────────────────────────────────
 # Monitoring Dashboard Specification
-# ──────────────────────────────────────────────────────────────────────────────
 #
 # Defines the panels, metrics, and layout for the ops monitoring dashboard.
-# Compatible with Grafana JSON model or custom rendering.
+# Implemented as a Grafana JSON dashboard provisioned via Docker Compose.
+# Source: monitoring/grafana/dashboards/wamiri-invoices.json
+#
+# Metrics come from two sources:
+#   1. DB-backed gauges: refreshed on every /api/metrics scrape (cross-process)
+#   2. Prometheus histograms/counters: emitted by Celery workers in-process
 
-version: "1.0.0"
+version: "2.0.0"
 
 dashboard:
-  title: "Document Processing – Operations"
-  refresh_interval_seconds: 30
+  title: "Wamiri Invoices — Processing Pipeline"
+  uid: "wamiri-invoices-main"
+  refresh_interval_seconds: 15
   time_range: "last_1h"
 
   rows:
-    # ── Row 1: Key Metrics ────────────────────────────────────────────────
+    # Row 1: Key Metrics (4 × stat/gauge)
     - title: "Key Metrics"
       panels:
-        - title: "P95 Latency"
-          type: gauge
-          metric: p95_latency_seconds
-          thresholds:
-            - value: 0
-              color: green
-            - value: 20
-              color: yellow
-            - value: 30
-              color: red
-          unit: seconds
+        - title: "Documents Processed"
+          type: stat
+          metric: documents_total_from_db
+          labels: ["status"]
+          description: "Total documents by processing status (from DB)"
 
-        - title: "Throughput"
+        - title: "P95 Processing Latency"
           type: gauge
-          metric: docs_per_hour
+          metric: p95_processing_latency_db
           thresholds:
-            - value: 0
-              color: red
-            - value: 4500
-              color: yellow
-            - value: 5000
-              color: green
-          unit: docs/hr
+            - { value: 0, color: green }
+            - { value: 15, color: yellow }
+            - { value: 30, color: red }
+          unit: seconds
+          max: 60
+
+        - title: "Review Queue Depth"
+          type: stat
+          metric: review_queue_depth
+          labels: ["status"]
+          thresholds:
+            - { value: 0, color: green }
+            - { value: 50, color: yellow }
+            - { value: 200, color: red }
 
         - title: "Error Rate"
           type: gauge
           metric: error_rate_percent
           thresholds:
-            - value: 0
-              color: green
-            - value: 0.5
-              color: yellow
-            - value: 1.0
-              color: red
+            - { value: 0, color: green }
+            - { value: 0.5, color: yellow }
+            - { value: 1.0, color: red }
           unit: "%"
+          max: 5
 
-        - title: "Queue Depth"
-          type: stat
-          metric: review_queue_depth
-          thresholds:
-            - value: 0
-              color: green
-            - value: 300
-              color: yellow
-            - value: 500
-              color: red
-
-    # ── Row 2: Time Series ────────────────────────────────────────────────
+    # Row 2: Time Series (2 × timeseries)
     - title: "Processing Trends"
       panels:
-        - title: "Processing Duration (P50 / P95 / P99)"
+        - title: "Processing Latency P95 (over time)"
           type: timeseries
           metrics:
-            - document_processing_seconds
-          display: histogram
+            - p95_processing_latency_db               # DB gauge
+            - "histogram_quantile(0.95, rate(document_processing_seconds_bucket[5m]))"  # Prometheus histogram
+          description: "Dual-source P95: DB-backed + Prometheus histogram"
 
-        - title: "Documents Processed"
+        - title: "Throughput (documents/hour)"
           type: timeseries
           metrics:
-            - documents_processed_total
-          display: counter
+            - throughput_docs_per_hour_db              # DB gauge
+            - "increase(documents_processed_total[1h])"  # Prometheus counter
+          description: "Dual-source throughput: DB count + counter increase"
 
-    # ── Row 3: Confidence & Quality ───────────────────────────────────────
-    - title: "Extraction Quality"
+    # Row 3: Confidence & SLA (2 × timeseries)
+    - title: "Quality & Compliance"
       panels:
-        - title: "Confidence Distribution"
-          type: histogram
-          metric: extraction_confidence_score
-
-        - title: "Review Duration"
-          type: histogram
-          metric: review_duration_seconds
-
-    # ── Row 4: SLA Compliance ─────────────────────────────────────────────
-    - title: "SLA Compliance"
-      panels:
-        - title: "SLA Breaches"
+        - title: "Extraction Confidence (avg, over time)"
           type: timeseries
           metrics:
-            - sla_breaches_total
-          labels: ["severity"]
+            - avg_extraction_confidence_db             # DB gauge
+            - "histogram_quantile(0.50, rate(extraction_confidence_score_bucket[5m]))"
+          unit: percentunit
+          min: 0
+          max: 1
 
-        - title: "Active Alerts"
-          type: table
-          data_source: sla_check_results
-          columns:
-            - sla_name
-            - current_value
-            - threshold
-            - severity
-            - timestamp
+        - title: "SLA Compliance (%)"
+          type: timeseries
+          metrics:
+            - sla_compliance_percent_db                # DB gauge
+            - "increase(sla_breaches_total[1h])"       # Prometheus counter
+          unit: percent
+
+    # Row 4: Distribution Heatmaps (2 × heatmap)
+    - title: "Distributions"
+      panels:
+        - title: "Confidence Score Distribution"
+          type: heatmap
+          metric: "increase(extraction_confidence_score_bucket[5m])"
+          unit: percentunit
+
+        - title: "Processing Duration Distribution"
+          type: heatmap
+          metric: "increase(document_processing_seconds_bucket[5m])"
+          unit: seconds
+
+    # Row 5: Rate & Queue Depth (2 × timeseries)
+    - title: "Operational Detail"
+      panels:
+        - title: "Documents Processed Rate (per minute)"
+          type: timeseries
+          metrics:
+            - 'rate(documents_processed_total{status="success"}[5m]) * 60'
+            - 'rate(documents_processed_total{status="failure"}[5m]) * 60'
+
+        - title: "Queue Depth (over time)"
+          type: timeseries
+          metrics:
+            - 'review_queue_depth{status="pending"}'
+            - 'review_queue_depth{status="in_review"}'
+          stacking: normal

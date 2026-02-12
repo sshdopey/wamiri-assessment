@@ -1,213 +1,246 @@
 # Monitoring Runbook
 
-## Metrics Overview
+> Prometheus metrics, SLA definitions, alert thresholds, and troubleshooting procedures for production operation.
 
-All metrics are exposed via Prometheus at `GET /api/metrics`.
+---
 
-### Key Metrics
+## Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `documents_processed_total` | Counter | Documents processed, labeled by status |
-| `document_processing_seconds` | Histogram | Extraction duration (P50, P95, P99) |
-| `extraction_confidence_score` | Histogram | Confidence distribution |
-| `review_queue_depth` | Gauge | Current items per status |
-| `sla_breaches_total` | Counter | SLA violations by severity |
-| `review_duration_seconds` | Histogram | Human review time |
-| `documents_per_hour` | Gauge | Current throughput rate |
+All metrics are exposed at `GET /api/metrics` in Prometheus text format. Metrics come from **two sources**:
 
-### Prometheus Scrape Config
+1. **In-memory** (Prometheus client) — counters, histograms collected inside Celery workers
+2. **DB-backed gauges** — refreshed every `/api/metrics` call by querying PostgreSQL (cross-process safe)
+
+### Available Metrics
+
+| Metric | Type | Source | What It Measures |
+|--------|------|--------|-----------------|
+| `documents_processed_total` | Counter | In-memory | Total documents processed (labeled `status=success\|failed`) |
+| `document_processing_seconds` | Histogram | In-memory | Extraction duration — use for P50/P95/P99 |
+| `extraction_confidence_score` | Histogram | In-memory | AI confidence distribution |
+| `review_queue_depth` | Gauge | DB-backed | Current items per queue status (pending, in_review, etc.) |
+| `sla_breaches_total` | Counter | In-memory | SLA violations, labeled by severity |
+| `review_duration_seconds` | Histogram | In-memory | Time from claim to review submission |
+| `documents_per_hour` | Gauge | DB-backed | Current throughput rate |
+| `documents_total` | Gauge | DB-backed | Total document counts by status |
+| `extraction_latency_p95` | Gauge | DB-backed | P95 extraction latency (SQL `percentile_cont`) |
+| `extraction_confidence_avg` | Gauge | DB-backed | Average extraction confidence |
+| `sla_compliance_rate` | Gauge | DB-backed | Percentage of items within SLA deadline |
+
+### Prometheus Scrape Configuration
 
 ```yaml
-# prometheus.yml
 scrape_configs:
-  - job_name: 'document-processor'
+  - job_name: 'wamiri-invoices'
     scrape_interval: 15s
     static_configs:
       - targets: ['api:8000']
     metrics_path: '/api/metrics'
 ```
 
-## Alert Thresholds
+---
 
-| Alert | Condition | Severity | Action |
-|-------|-----------|----------|--------|
-| High Latency | P95 > 30s | Warning | Scale workers |
-| Error Rate | > 1% | Critical | Check Gemini API |
-| Queue Depth | > 500 | Warning | Add reviewers |
-| SLA Breach | > 0.1% | Critical | Escalate + investigate |
-| Throughput Drop | < 4,500/hr | Warning | Check Redis/workers |
+## SLA Definitions
 
-## Troubleshooting Guide
+Five SLAs define "healthy" operation:
+
+| SLA | Metric | Threshold | Window | Severity | Action |
+|-----|--------|-----------|--------|----------|--------|
+| **Latency** | P95 extraction time | < 30 seconds | 5 min | Critical | Scale workers |
+| **Throughput** | Docs processed/hour | > 4,500 | 15 min | Warning | Check Redis + workers |
+| **Error Rate** | Failed / total | < 1% | 5 min | Critical | Check Gemini API |
+| **Queue Depth** | Pending review items | < 500 | 5 min | Warning | Add reviewers |
+| **SLA Breach** | % items past deadline | < 0.1% | 1 hour | Critical | Escalate immediately |
+
+---
+
+## Troubleshooting
 
 ### 1. High Extraction Latency (P95 > 30s)
 
-**Symptoms**: `document_processing_seconds` P95 exceeds 30 seconds.
+**You'll see:** `document_processing_seconds` P95 above 30s.
 
-**Diagnostic Steps**:
+**Check:**
 ```bash
-# Check Celery worker status
+# Worker status
 celery -A src.tasks.celery_app inspect active
 
-# Check Redis queue depth
+# Redis queue depth (backlog)
 redis-cli LLEN celery
 
-# Check worker concurrency
+# Worker load
 celery -A src.tasks.celery_app inspect stats | grep concurrency
 ```
 
-**Resolution**:
-1. Increase Celery concurrency: `--concurrency=8`
-2. Add more worker nodes
-3. Check Gemini API rate limits (may need quota increase)
-4. Review PDF sizes — large multi-page documents take longer
+**Fix:**
+1. Increase concurrency: `--concurrency=8` (if CPU allows)
+2. Add worker nodes (horizontal scale)
+3. Check Gemini API quotas — may need a quota increase
+4. Large multi-page PDFs take longer — consider splitting
+
+---
 
 ### 2. High Error Rate (> 1%)
 
-**Symptoms**: `documents_processed_total{status="failed"}` increasing.
+**You'll see:** `documents_processed_total{status="failed"}` climbing.
 
-**Diagnostic Steps**:
+**Check:**
 ```bash
-# Check recent errors
+# Recent task errors
 celery -A src.tasks.celery_app inspect reserved
 
-# Check Gemini API status
-curl -s https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview \
+# Gemini API availability
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview" \
   -H "x-goog-api-key: $GEMINI_API_KEY" | head
 ```
 
-**Resolution**:
-1. Check Gemini API key validity
-2. Verify document format compatibility (PDF, PNG, JPEG, WebP, etc.)
-3. Review retry logs for patterns
-4. Check for malformed documents in upload queue
+**Fix:**
+1. Verify Gemini API key is valid and not expired
+2. Check if specific file formats are causing failures
+3. Review task error logs for patterns
+4. Check for corrupt or malformed uploads
+
+---
 
 ### 3. Queue Depth > 500
 
-**Symptoms**: `review_queue_depth{status="pending"}` exceeds 500.
+**You'll see:** `review_queue_depth{status="pending"}` above 500.
 
-**Resolution**:
-1. Assign more reviewers
-2. Increase auto-approval threshold for high-confidence items
-3. Check if workers are stuck (inspect active tasks)
-4. Consider batch approval for items with confidence > 95%
+**Fix:**
+1. Assign more reviewers to the queue
+2. Consider auto-approval for items with confidence > 95%
+3. Check if workers are stuck (tasks not completing)
+4. Implement batch approval for high-confidence items
+
+---
 
 ### 4. SLA Breaches
 
-**Symptoms**: `sla_breaches_total` counter increasing.
+**You'll see:** `sla_breaches_total` counter increasing.
 
-**Diagnostic Steps**:
+**Check:**
 ```sql
--- Check items near SLA breach (PostgreSQL)
+-- Items closest to SLA breach
 SELECT id, filename, sla_deadline,
-       ROUND(EXTRACT(EPOCH FROM (sla_deadline - NOW())) / 3600, 1) AS hours_remaining
+       ROUND(EXTRACT(EPOCH FROM (sla_deadline - NOW())) / 3600, 1) AS hours_left
 FROM review_items
 WHERE status IN ('pending', 'in_review')
 ORDER BY sla_deadline ASC
 LIMIT 20;
 ```
 
-**Resolution**:
-1. Prioritize items closest to SLA deadline
+**Fix:**
+1. Prioritize items nearest to deadline (the queue already does this)
 2. Escalate overdue items to senior reviewers
-3. Consider extending SLA for batch uploads
-4. Review assignment balance across reviewers
+3. Temporarily extend SLA for batch uploads if needed
+4. Check reviewer workload balance
 
-### 5. Redis Connection Issues
+---
 
-**Symptoms**: Celery workers disconnecting, tasks not queuing.
+### 5. Redis Issues
 
-**Diagnostic Steps**:
+**You'll see:** Workers disconnecting, tasks not queuing.
+
+**Check:**
 ```bash
-# Test Redis connectivity
-redis-cli ping
-
-# Check Redis memory
-redis-cli INFO memory | grep used_memory_human
-
-# Check connected clients
-redis-cli CLIENT LIST | wc -l
+redis-cli ping                              # Connectivity
+redis-cli INFO memory | grep used_memory    # Memory usage
+redis-cli CLIENT LIST | wc -l              # Connected clients
 ```
 
-**Resolution**:
-1. Restart Redis: `docker compose restart redis`
-2. Check memory limits: `maxmemory` configuration
-3. Clear stale connections: `CLIENT KILL`
-4. Enable Redis persistence for durability
+**Fix:**
+1. Restart: `docker compose restart redis`
+2. Check `maxmemory` — increase if needed
+3. Clear stale connections: `redis-cli CLIENT KILL`
+4. Enable persistence (AOF/RDB) for durability
 
-### 6. PostgreSQL Connection Pool Exhaustion
+---
 
-**Symptoms**: `asyncpg.TooManyConnectionsError` in API logs.
+### 6. PostgreSQL Connection Exhaustion
 
-**Diagnostic Steps**:
+**You'll see:** `asyncpg.TooManyConnectionsError` in API logs.
+
+**Check:**
 ```sql
--- Check active connections
-SELECT count(*) FROM pg_stat_activity
-WHERE datname = 'document_processing';
+SELECT count(*) FROM pg_stat_activity WHERE datname = 'document_processing';
 
--- Check connection states
-SELECT state, count(*)
-FROM pg_stat_activity
-WHERE datname = 'document_processing'
-GROUP BY state;
+SELECT state, count(*) FROM pg_stat_activity
+WHERE datname = 'document_processing' GROUP BY state;
 ```
 
-**Resolution**:
-1. Increase pool size in `database.py` (`max_size` parameter)
-2. Ensure connections are released after use
-3. Check for long-running queries holding connections
-4. Restart the API service: `docker compose restart api`
+**Fix:**
+1. Increase pool `max_size` in `database.py`
+2. Check for leaked connections (long-running queries)
+3. Restart: `docker compose restart api`
+4. Consider PgBouncer for connection pooling at scale
 
-## Scaling Recommendations
+---
 
-### Vertical Scaling
+## Scaling Guide
 
-| Component | Current | Recommended for 10K docs/hr |
-|-----------|---------|---------------------------|
-| Celery workers | 1 × 4 concurrency | 3 × 4 concurrency |
-| Redis memory | 256MB | 1GB |
-| API workers | 1 uvicorn | 4 gunicorn workers |
-| PostgreSQL | Default | Tune `shared_buffers`, `work_mem` |
-| Disk I/O | Standard SSD | NVMe for Parquet writes |
+### Grafana Dashboard (12 Panels)
 
-### Horizontal Scaling
+The auto-provisioned Grafana dashboard (`Wamiri Invoices`) refreshes every 15 seconds and provides comprehensive visibility across five rows:
 
-```
-                    ┌─── Worker 1 (4 tasks)
-Load Balancer ────┤
-(nginx)           ├─── Worker 2 (4 tasks)
-    │             └─── Worker 3 (4 tasks)
-    ▼
-┌────────┐      ┌────────┐
-│ API 1  │      │ API 2  │    (behind LB)
-└────────┘      └────────┘
-    │               │
-    └───────┬───────┘
-            ▼
-      ┌──────────┐       ┌──────────────┐
-      │  Redis   │       │  PostgreSQL  │
-      └──────────┘       └──────────────┘
-```
+| Row | Panels | Source | Purpose |
+|-----|--------|--------|---------|
+| **Overview** | Documents Processed (stat), P95 Latency (gauge), Queue Depth (stat), Error Rate (gauge) | DB gauges | At-a-glance KPIs |
+| **Timeseries** | Processing Latency P95, Throughput (docs/min) | Dual: DB gauge + `histogram_quantile` | Trend analysis with two independent data sources |
+| **Quality** | Extraction Confidence, SLA Compliance (with breach overlay) | Dual: DB avg + histogram median | Quality trends + breach rate on right Y-axis |
+| **Distributions** | Confidence Score (heatmap), Processing Duration (heatmap) | Prometheus histograms | Distribution shape analysis for 5K+ doc runs |
+| **Rates** | Documents Processed Rate (success/failure), Queue Depth over time (stacked) | `rate()` + DB gauges | Live rate visibility + queue pressure |
+
+**Dual-source strategy:** DB-backed gauges are always available (even with 1 document). Prometheus histograms populate as more data accumulates. Both are shown together — you always have at least one working source.
+
+**Dashboard spec:** `backend/configs/dashboard_spec.yaml` (v2.0.0) documents all panel configurations.
 
 ### When to Scale
 
-| Metric | Threshold | Scale Action |
-|--------|-----------|-------------|
-| Worker CPU > 80% | Sustained 5 min | Add worker node |
-| Queue depth > 1000 | Growing trend | Add workers + reviewers |
-| API latency P99 > 500ms | Sustained | Add API instance |
-| Redis memory > 75% | Growing | Increase maxmemory |
-| PostgreSQL connections > 80% | Sustained | Increase pool / add read replicas |
+| Signal | Threshold | Action |
+|--------|-----------|--------|
+| Worker CPU > 80% for 5 min | Sustained | Add worker node |
+| Queue depth > 1000 and growing | Trend | Add workers + reviewers |
+| API P99 > 500ms | Sustained | Add API instance |
+| Redis memory > 75% | Growing | Increase `maxmemory` |
+| PostgreSQL connections > 80% | Sustained | Increase pool or add read replicas |
+
+### Horizontal Scaling Architecture
+
+```
+                     ┌─── Celery Worker 1 (4 tasks) ──┐
+  Load Balancer ────┤                                   ├── Gemini API
+  (nginx)           ├─── Celery Worker 2 (4 tasks) ──┤
+       │            └─── Celery Worker 3 (4 tasks) ──┘
+       ▼
+  ┌─────────┐  ┌─────────┐
+  │ API #1  │  │ API #2  │   (behind load balancer)
+  └────┬────┘  └────┬────┘
+       └──────┬─────┘
+              ▼
+        ┌──────────┐     ┌──────────────┐
+        │  Redis   │     │  PostgreSQL  │
+        └──────────┘     └──────────────┘
+```
+
+### Capacity Estimates
+
+| Config | Throughput | Notes |
+|--------|-----------|-------|
+| 1 worker × 4 concurrency | ~4,800 docs/hr | Single node, 3s avg extraction |
+| 3 workers × 4 concurrency | ~14,000 docs/hr | Three nodes, linear scaling |
+| + 2 API instances | Same throughput | Better request latency under load |
+
+---
 
 ## Metric Snapshots
 
-Metrics are automatically saved to `data/metrics/` every hour:
+Metrics are automatically saved hourly to `data/metrics/`:
 
 ```
 data/metrics/
-├── snapshot_2025-01-15_14-00.json
-├── snapshot_2025-01-15_15-00.json
+├── snapshot_2026-02-11_14-00.json
+├── snapshot_2026-02-11_15-00.json
 └── ...
 ```
 
-Each snapshot contains all current Prometheus metric values for historical analysis and trend detection.
+Each snapshot captures all current Prometheus metric values for historical trend analysis, even without a full Prometheus/Grafana setup.

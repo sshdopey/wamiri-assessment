@@ -38,7 +38,7 @@ class ReviewAction(str, enum.Enum):
     REJECT = "reject"
 
 
-# ─── Line Item ─────────────────────────────────────────────────────────────────
+# Line Item
 
 
 class LineItem(BaseModel):
@@ -50,7 +50,7 @@ class LineItem(BaseModel):
     total: float = Field(..., ge=0, description="Line total")
 
 
-# ─── Invoice Data (Gemini output schema) ───────────────────────────────────────
+# Invoice Data (Gemini output schema)
 
 
 class InvoiceData(BaseModel):
@@ -68,7 +68,7 @@ class InvoiceData(BaseModel):
     line_items: list[LineItem] = Field(default_factory=list)
 
 
-# ─── Extraction Result ─────────────────────────────────────────────────────────
+# Extraction Result
 
 
 class FieldConfidence(BaseModel):
@@ -90,9 +90,13 @@ class ExtractionResult(BaseModel):
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     processing_time_seconds: float = 0.0
     content_hash: Optional[str] = None
+    schema_version: str = Field(
+        default="1.0.0",
+        description="Schema version for backward compatibility",
+    )
 
 
-# ─── Review Queue Models ───────────────────────────────────────────────────────
+# Review Queue Models
 
 
 class ExtractedField(BaseModel):
@@ -139,7 +143,7 @@ class ClaimRequest(BaseModel):
     reviewer_id: str
 
 
-# ─── API Response Models ───────────────────────────────────────────────────────
+# API Response Models
 
 
 class Document(BaseModel):

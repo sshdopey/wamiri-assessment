@@ -1,6 +1,4 @@
-# ──────────────────────────────────────────────────────────────────────────────
 # SLA Definitions – Document Processing Platform
-# ──────────────────────────────────────────────────────────────────────────────
 #
 # Each SLA defines a metric, threshold, evaluation window, and severity.
 # The monitoring service evaluates these continuously and raises alerts
@@ -54,7 +52,7 @@ slas:
     severity: critical
     action: "Emergency triage; re-prioritise queue; add reviewers"
 
-# ── Alert channels ────────────────────────────────────────────────────────────
+# Alert channels
 alerting:
   channels:
     - type: console

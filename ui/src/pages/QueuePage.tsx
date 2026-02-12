@@ -1,14 +1,17 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ClipboardList,
   Clock,
   AlertTriangle,
   ArrowRight,
-  RefreshCw,
   Inbox,
   Filter,
   ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  Timer,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,45 +24,50 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { queueApi } from "@/lib/api";
-import type { ReviewItem, QueueStats } from "@/lib/types";
+import type { ReviewItem } from "@/lib/types";
 import { getDocumentDisplayName, getDocumentSubtitle } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useReviewStore } from "@/lib/store";
 
 export function QueuePage() {
-  const [items, setItems] = useState<ReviewItem[]>([]);
-  const [stats, setStats] = useState<QueueStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<string>("pending");
-  const [sortBy, setSortBy] = useState<"priority" | "sla" | "date">(
-    "priority"
-  );
   const navigate = useNavigate();
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [queueRes, statsRes] = await Promise.all([
-        queueApi.getQueue({
-          status: statusFilter === "all" ? undefined : statusFilter,
-          sort_by: sortBy,
-          limit: 50,
-          offset: 0,
-        }),
-        queueApi.getStats(),
-      ]);
-      setItems(queueRes.items);
-      setStats(statsRes);
-    } catch {
-      /* empty state */
-    } finally {
-      setLoading(false);
-    }
-  }, [statusFilter, sortBy]);
+  const {
+    queueItems: items,
+    total,
+    page,
+    pageSize,
+    stats,
+    loading,
+    filters,
+    fetchQueue,
+    setFilter,
+    setPage,
+    startPolling,
+    stopPolling,
+  } = useReviewStore();
+
+  // SLA countdown timer — ticks every second
+  const [, setTick] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    timerRef.current = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(timerRef.current);
+  }, []);
+
+  // Start always-on polling on mount, stop on unmount
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  // Re-fetch when filters or page change
+  useEffect(() => {
+    fetchQueue();
+  }, [filters.status, filters.sort_by, filters.assigned_to, page, fetchQueue]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const getConfidence = (item: ReviewItem) => {
     if (!item.fields?.length) return null;
@@ -82,9 +90,26 @@ export function QueuePage() {
     return new Date(item.sla_deadline) < new Date();
   };
 
+  /** Live SLA countdown: returns formatted time remaining or "OVERDUE" */
+  const getSlaCountdown = (item: ReviewItem) => {
+    if (!item.sla_deadline) return null;
+    const deadline = new Date(item.sla_deadline).getTime();
+    const now = Date.now();
+    const diff = deadline - now;
+
+    if (diff <= 0) return "OVERDUE";
+
+    const hours = Math.floor(diff / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    const secs = Math.floor((diff % 60000) / 1000);
+
+    if (hours > 0) return `${hours}h ${mins}m`;
+    if (mins > 0) return `${mins}m ${secs}s`;
+    return `${secs}s`;
+  };
+
   return (
-    <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
-      {/* ── Header ────────────────────────────────────────────────── */}
+    <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto" role="main" aria-label="Review Queue">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Review Queue</h2>
@@ -92,22 +117,19 @@ export function QueuePage() {
             Invoices extracted by AI, awaiting your review and approval.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={fetchData}
-          disabled={loading}
-        >
-          <RefreshCw
-            className={cn("h-4 w-4 mr-1.5", loading && "animate-spin")}
-          />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Badge variant="outline" className="text-xs text-muted-foreground">
+            <span className="relative flex h-2 w-2 mr-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+            </span>
+            Live
+          </Badge>
+        </div>
       </div>
 
-      {/* ── Stats strip ───────────────────────────────────────────── */}
       {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3" role="region" aria-label="Queue statistics">
           {[
             {
               label: "In Queue",
@@ -142,10 +164,10 @@ export function QueuePage() {
           ].map((s) => (
             <Card key={s.label}>
               <CardContent className="py-3 px-4 flex items-center gap-3">
-                <s.icon className={cn("h-5 w-5 shrink-0", s.color)} />
+                <s.icon className={cn("h-5 w-5 shrink-0", s.color)} aria-hidden="true" />
                 <div>
                   <p className="text-xs text-muted-foreground">{s.label}</p>
-                  <p className="text-lg font-bold">{s.value}</p>
+                  <p className="text-lg font-bold" aria-label={`${s.label}: ${s.value}`}>{s.value}</p>
                 </div>
               </CardContent>
             </Card>
@@ -153,16 +175,18 @@ export function QueuePage() {
         </div>
       )}
 
-      {/* ── Filters ───────────────────────────────────────────────── */}
-      <div className="flex gap-2">
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-40">
-            <Filter className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+      <div className="flex flex-wrap gap-2" role="search" aria-label="Queue filters">
+        <Select
+          value={filters.status ?? "all"}
+          onValueChange={(v) => setFilter("status", v === "all" ? undefined : v)}
+        >
+          <SelectTrigger className="w-40" aria-label="Filter by status">
+            <Filter className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" aria-hidden="true" />
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="pending">Pending Review</SelectItem>
             <SelectItem value="in_review">In Review</SelectItem>
             <SelectItem value="approved">Approved</SelectItem>
             <SelectItem value="corrected">Corrected</SelectItem>
@@ -170,11 +194,26 @@ export function QueuePage() {
           </SelectContent>
         </Select>
         <Select
-          value={sortBy}
-          onValueChange={(v) => setSortBy(v as typeof sortBy)}
+          value={filters.assigned_to ?? "all"}
+          onValueChange={(v) => setFilter("assigned_to", v === "all" ? undefined : v)}
         >
-          <SelectTrigger className="w-36">
-            <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+          <SelectTrigger className="w-40" aria-label="Filter by reviewer">
+            <User className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" aria-hidden="true" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Reviewers</SelectItem>
+            <SelectItem value="reviewer-1">Reviewer 1</SelectItem>
+            <SelectItem value="reviewer-2">Reviewer 2</SelectItem>
+            <SelectItem value="reviewer-3">Reviewer 3</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.sort_by}
+          onValueChange={(v) => setFilter("sort_by", v)}
+        >
+          <SelectTrigger className="w-36" aria-label="Sort by">
+            <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" aria-hidden="true" />
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -185,17 +224,16 @@ export function QueuePage() {
         </Select>
       </div>
 
-      {/* ── Queue items ───────────────────────────────────────────── */}
       {loading ? (
-        <div className="space-y-3">
+        <div className="space-y-3" aria-busy="true" aria-label="Loading queue items">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full rounded-xl" />
           ))}
         </div>
       ) : items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="flex flex-col items-center justify-center py-20 text-center" role="status">
           <div className="rounded-full bg-muted p-4 mb-4">
-            <Inbox className="h-8 w-8 text-muted-foreground" />
+            <Inbox className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
           </div>
           <h3 className="text-lg font-semibold">Queue is empty</h3>
           <p className="text-sm text-muted-foreground mt-1 max-w-sm">
@@ -207,7 +245,7 @@ export function QueuePage() {
           </Button>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3" role="list" aria-label="Queue items">
           {items.map((item) => {
             const conf = getConfidence(item);
             const overdue = isOverdue(item);
@@ -221,6 +259,15 @@ export function QueuePage() {
                   overdue && "border-red-500/30"
                 )}
                 onClick={() => navigate(`/review/${item.id}`, { state: { from: '/queue' } })}
+                role="listitem"
+                tabIndex={0}
+                aria-label={`${displayName}, priority ${item.priority}, status ${item.status}`}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(`/review/${item.id}`, { state: { from: '/queue' } });
+                  }
+                }}
               >
                 <CardContent className="py-4 px-5 flex items-center gap-4">
                   {/* Priority indicator */}
@@ -233,6 +280,7 @@ export function QueuePage() {
                           ? "bg-amber-500"
                           : "bg-blue-500"
                     )}
+                    aria-hidden="true"
                   />
 
                   {/* Info */}
@@ -256,14 +304,44 @@ export function QueuePage() {
                           <span className="font-medium text-foreground/70">
                             {subtitle}
                           </span>
-                          <span>•</span>
+                          <span aria-hidden="true">•</span>
                         </>
                       )}
                       <span>Priority {item.priority}</span>
-                      <span>•</span>
+                      <span aria-hidden="true">•</span>
                       <span>{item.fields?.length ?? 0} fields</span>
-                      <span>•</span>
+                      <span aria-hidden="true">•</span>
                       <span>{getTimeAgo(item.created_at)}</span>
+                      {item.assigned_to && (
+                        <>
+                          <span aria-hidden="true">•</span>
+                          <span className="flex items-center gap-0.5">
+                            <User className="h-3 w-3" aria-hidden="true" />
+                            {item.assigned_to}
+                          </span>
+                        </>
+                      )}
+                      {/* SLA Countdown */}
+                      {item.sla_deadline && !item.completed_at && (() => {
+                        const countdown = getSlaCountdown(item);
+                        if (!countdown) return null;
+                        const isOver = countdown === "OVERDUE";
+                        return (
+                          <>
+                            <span aria-hidden="true">•</span>
+                            <span
+                              className={cn(
+                                "flex items-center gap-0.5 font-medium",
+                                isOver ? "text-red-600" : "text-amber-600"
+                              )}
+                              aria-label={isOver ? "SLA overdue" : `SLA remaining: ${countdown}`}
+                            >
+                              <Timer className="h-3 w-3" aria-hidden="true" />
+                              {isOver ? "Overdue" : countdown}
+                            </span>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
 
@@ -279,12 +357,23 @@ export function QueuePage() {
                               ? "text-amber-600"
                               : "text-red-600"
                         )}
+                        aria-label={`Confidence: ${conf}%`}
                       >
                         {conf}%
                       </span>
                       <span className="text-[10px] text-muted-foreground">
                         confidence
                       </span>
+                    </div>
+                  )}
+
+                  {/* Reviewer badge */}
+                  {item.assigned_to && (
+                    <div className="hidden sm:flex flex-col items-center gap-1">
+                      <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded-full">
+                        <User className="h-3 w-3" aria-hidden="true" />
+                        <span>{item.assigned_to.replace("reviewer-", "R")}</span>
+                      </div>
                     </div>
                   )}
 
@@ -301,16 +390,74 @@ export function QueuePage() {
                     }
                     className="shrink-0"
                   >
-                    {item.status.replace("_", " ")}
+                    {item.status === "pending"
+                      ? "pending review"
+                      : item.status.replace("_", " ")}
                   </Badge>
 
                   {/* Arrow */}
-                  <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                  <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" aria-hidden="true" />
                 </CardContent>
               </Card>
             );
           })}
         </div>
+      )}
+
+      {!loading && items.length > 0 && totalPages > 1 && (
+        <nav className="flex items-center justify-between pt-2" aria-label="Queue pagination">
+          <p className="text-sm text-muted-foreground" aria-live="polite">
+            Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, total)} of {total}
+          </p>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page === 0}
+              onClick={() => setPage(Math.max(0, page - 1))}
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              Prev
+            </Button>
+            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+              // Show pages around current page
+              let pageNum: number;
+              if (totalPages <= 5) {
+                pageNum = i;
+              } else if (page < 3) {
+                pageNum = i;
+              } else if (page > totalPages - 4) {
+                pageNum = totalPages - 5 + i;
+              } else {
+                pageNum = page - 2 + i;
+              }
+              return (
+                <Button
+                  key={pageNum}
+                  variant={pageNum === page ? "default" : "outline"}
+                  size="sm"
+                  className="w-9"
+                  onClick={() => setPage(pageNum)}
+                  aria-label={`Page ${pageNum + 1}`}
+                  aria-current={pageNum === page ? "page" : undefined}
+                >
+                  {pageNum + 1}
+                </Button>
+              );
+            })}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= totalPages - 1}
+              onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+              aria-label="Next page"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </div>
+        </nav>
       )}
     </div>
   );

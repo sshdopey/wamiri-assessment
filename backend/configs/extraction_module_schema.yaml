@@ -1,10 +1,8 @@
-# ──────────────────────────────────────────────────────────────────────────────
 # Extraction Module Configuration Schema
-# ──────────────────────────────────────────────────────────────────────────────
 
 version: "1.0.0"
 
-# ── LLM Provider ──────────────────────────────────────────────────────────────
+# LLM Provider
 llm:
   provider: "google-gemini"
   model: "gemini-3-flash-preview"
@@ -12,7 +10,7 @@ llm:
   max_output_tokens: 8192
   timeout_seconds: 60
 
-# ── Extraction Fields ─────────────────────────────────────────────────────────
+# Extraction Fields
 fields:
   - name: vendor
     type: string
@@ -103,20 +101,20 @@ fields:
           min: 0
     confidence_threshold: 0.70
 
-# ── Idempotency ───────────────────────────────────────────────────────────────
+# Idempotency
 idempotency:
   enabled: true
   hash_algorithm: "sha256"
   cache_ttl_hours: 720        # 30 days
   skip_locked_fields: true    # never overwrite manually corrected data
 
-# ── Field Preservation ────────────────────────────────────────────────────────
+# Field Preservation
 field_preservation:
   respect_manual_corrections: true
   lock_on_correction: true
   audit_trail: true
 
-# ── Output Formats ────────────────────────────────────────────────────────────
+# Output Formats
 output:
   formats:
     - type: parquet
@@ -129,7 +127,7 @@ output:
   validate_before_write: true
   atomic_writes: true         # write to temp then rename
 
-# ── Processing ────────────────────────────────────────────────────────────────
+# Processing
 processing:
   max_concurrent: 10
   retry:
@@ -141,7 +139,7 @@ processing:
     recovery_timeout_seconds: 60
   timeout_seconds: 300
 
-# ── Validation Rules ──────────────────────────────────────────────────────────
+# Validation Rules
 validation:
   cross_field:
     - rule: "tax_amount ≈ subtotal * tax_rate / 100"

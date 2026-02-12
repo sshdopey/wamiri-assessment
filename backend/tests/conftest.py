@@ -30,6 +30,7 @@ def event_loop():
 async def _reset_db_pool():
     """Reset the asyncpg pool before each test to match the current event loop."""
     from src.services.database import close_pool, reset_pool
+
     reset_pool()
     yield
     try:
@@ -88,8 +89,12 @@ def sample_extraction_result():
             ],
         ),
         field_confidences=[
-            FieldConfidence(field_name="vendor", value="Test Vendor Inc.", confidence=0.95),
-            FieldConfidence(field_name="invoice_number", value="INV-2024-001", confidence=0.92),
+            FieldConfidence(
+                field_name="vendor", value="Test Vendor Inc.", confidence=0.95
+            ),
+            FieldConfidence(
+                field_name="invoice_number", value="INV-2024-001", confidence=0.92
+            ),
             FieldConfidence(field_name="date", value="2024-01-15", confidence=0.90),
             FieldConfidence(field_name="total", value=1200.0, confidence=0.97),
             FieldConfidence(field_name="line_items", value=[], confidence=0.88),

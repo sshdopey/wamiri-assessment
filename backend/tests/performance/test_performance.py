@@ -1,4 +1,12 @@
-"""Performance tests – latency, throughput, memory."""
+"""Performance tests – latency, throughput, memory, and workflow execution.
+
+Benchmarks:
+- API endpoint latency (P95)
+- Concurrent queue reads
+- DAG execution throughput
+- Memory usage for batch payloads
+- Workflow executor scalability
+"""
 
 from __future__ import annotations
 
@@ -84,6 +92,105 @@ class TestThroughput:
         assert ops_per_sec > 50, (
             f"Throughput {ops_per_sec:.1f} ops/s too low (need >50)"
         )
+
+
+class TestWorkflowExecutorPerformance:
+    """Benchmark the DAG-based workflow executor."""
+
+    @pytest.mark.asyncio
+    async def test_dag_execution_p95_under_30s(self):
+        """Simulated extraction DAG should complete well within 30s SLA."""
+        from src.services.workflow_executor import (
+            WorkflowDAG,
+            WorkflowExecutor,
+        )
+
+        async def fast_extract(ctx):
+            await asyncio.sleep(0.01)  # simulate fast extraction
+            return {"document_id": "test", "overall_confidence": 0.85}
+
+        async def fast_save(ctx):
+            await asyncio.sleep(0.005)  # simulate file write
+            return "saved"
+
+        async def fast_review(ctx):
+            await asyncio.sleep(0.005)
+            return "queued"
+
+        times: list[float] = []
+        for _ in range(20):
+            dag = WorkflowDAG()
+            dag.add_step("extract", fast_extract)
+            dag.add_step("save_parquet", fast_save, depends_on=["extract"])
+            dag.add_step("save_json", fast_save, depends_on=["extract"])
+            dag.add_step(
+                "review", fast_review, depends_on=["save_parquet", "save_json"]
+            )
+
+            executor = WorkflowExecutor(max_concurrency=4)
+            t0 = time.perf_counter()
+            result = await executor.execute(dag)
+            elapsed = time.perf_counter() - t0
+            times.append(elapsed)
+            assert result.success
+
+        times.sort()
+        p95 = times[int(len(times) * 0.95)]
+        assert p95 < 1.0, (
+            f"DAG execution p95 {p95:.3f}s (simulated; SLA is 30s for real extraction)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_dag_throughput(self):
+        """Simulate batch processing: 50 DAGs running concurrently."""
+        from src.services.workflow_executor import (
+            WorkflowDAG,
+            WorkflowExecutor,
+        )
+
+        async def quick_step(ctx):
+            await asyncio.sleep(0.005)
+            return "done"
+
+        async def run_one_dag():
+            dag = WorkflowDAG()
+            dag.add_step("extract", quick_step)
+            dag.add_step("save", quick_step, depends_on=["extract"])
+            dag.add_step("review", quick_step, depends_on=["save"])
+            executor = WorkflowExecutor(max_concurrency=4)
+            return await executor.execute(dag)
+
+        t0 = time.perf_counter()
+        results = await asyncio.gather(*(run_one_dag() for _ in range(50)))
+        elapsed = time.perf_counter() - t0
+
+        assert all(r.success for r in results), "Some DAGs failed"
+        throughput = 50 / elapsed
+        # Should handle > 10 DAGs/sec in simulated mode
+        assert throughput > 10, f"Only {throughput:.1f} DAGs/sec (need >10)"
+
+    @pytest.mark.asyncio
+    async def test_semaphore_fairness_under_load(self):
+        """With limited concurrency, all steps should still complete."""
+        from src.services.workflow_executor import (
+            WorkflowDAG,
+            WorkflowExecutor,
+        )
+
+        async def slow_step(ctx):
+            await asyncio.sleep(0.02)
+            return "done"
+
+        dag = WorkflowDAG()
+        for i in range(20):
+            dag.add_step(f"step_{i}", slow_step)
+
+        # Only 3 concurrent — should still complete all 20
+        executor = WorkflowExecutor(max_concurrency=3)
+        result = await executor.execute(dag)
+
+        assert result.success
+        assert result.completed_count == 20
 
 
 class TestMemory:

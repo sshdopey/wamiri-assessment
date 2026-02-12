@@ -1,10 +1,43 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.py[cod]
+*$py.class
+*.so
 
 # Virtual environments
+.env
 .venv
+env/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# Environment variables
+.env.local
+.env.*.local
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# Project outputs
+data/
+outputs/
+logs/

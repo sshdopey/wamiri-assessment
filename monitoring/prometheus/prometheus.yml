@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "wamiri-api"
+    metrics_path: "/api/metrics"
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: "wamiri-invoices"
+          component: "api"

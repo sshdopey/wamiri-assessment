@@ -129,8 +129,7 @@ export function UploadPage() {
   const readyUploads = uploads.filter((u) => u.status === "ready");
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-8">
-      {/* ── Header ────────────────────────────────────────────────── */}
+    <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-8" role="main" aria-label="Upload Invoices">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Upload Invoices</h2>
         <p className="text-muted-foreground mt-1">
@@ -140,9 +139,8 @@ export function UploadPage() {
         </p>
       </div>
 
-      {/* ── Active processing banner ──────────────────────────────── */}
       {(processingUploads.length > 0 || readyUploads.length > 0) && (
-        <Card className="border-blue-200 bg-blue-50/60 dark:bg-blue-950/20">
+        <Card className="border-blue-200 bg-blue-50/60 dark:bg-blue-950/20" role="status" aria-label="Upload processing status">
           <CardContent className="py-3 px-4 space-y-2">
             {processingUploads.length > 0 && (
               <div className="flex items-center gap-3">
@@ -183,7 +181,6 @@ export function UploadPage() {
         </Card>
       )}
 
-      {/* ── Drop zone ─────────────────────────────────────────────── */}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -192,6 +189,15 @@ export function UploadPage() {
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+        aria-label="Drop zone: drag and drop invoice files here, or click to browse"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            fileInputRef.current?.click();
+          }
+        }}
         className={cn(
           "relative cursor-pointer rounded-xl border-2 border-dashed p-12 text-center transition-all duration-200",
           isDragging
@@ -205,6 +211,7 @@ export function UploadPage() {
           accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.tiff,.tif,.bmp,application/pdf,image/png,image/jpeg,image/webp,image/gif,image/tiff,image/bmp"
           multiple
           className="hidden"
+          aria-label="Select invoice files to upload"
           onChange={(e) => e.target.files && addFiles(e.target.files)}
         />
         <div className="flex flex-col items-center gap-4">
@@ -234,7 +241,6 @@ export function UploadPage() {
         </div>
       </div>
 
-      {/* ── File list ─────────────────────────────────────────────── */}
       {files.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -252,8 +258,8 @@ export function UploadPage() {
                 </Button>
               )}
               {pendingCount > 0 && (
-                <Button size="sm" onClick={uploadAll}>
-                  <Upload className="h-4 w-4 mr-1.5" />
+                <Button size="sm" onClick={uploadAll} aria-label={`Upload ${pendingCount} pending files`}>
+                  <Upload className="h-4 w-4 mr-1.5" aria-hidden="true" />
                   Upload{" "}
                   {pendingCount === files.length
                     ? "All"
@@ -263,7 +269,7 @@ export function UploadPage() {
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2" role="list" aria-label="Selected files">
             {files.map((entry, index) => (
               <Card
                 key={`${entry.file.name}-${index}`}
@@ -351,8 +357,9 @@ export function UploadPage() {
                           variant="ghost"
                           className="h-8 w-8 text-muted-foreground"
                           onClick={() => removeFile(index)}
+                          aria-label={`Remove ${entry.file.name}`}
                         >
-                          <X className="h-4 w-4" />
+                          <X className="h-4 w-4" aria-hidden="true" />
                         </Button>
                       </div>
                     )}
@@ -373,7 +380,6 @@ export function UploadPage() {
         </div>
       )}
 
-      {/* ── How it works ──────────────────────────────────────────── */}
       {files.length === 0 && (
         <div>
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">

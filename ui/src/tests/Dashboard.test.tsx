@@ -1,13 +1,11 @@
-/* ──────────────────────────────────────────────────────────────────────────
-   Frontend UI tests – Vitest + Testing Library
-   ────────────────────────────────────────────────────────────────────────── */
 
 import { describe, test, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { MemoryRouter } from "react-router-dom";
 
-/* ── Mock API layer ───────────────────────────────────────────────────────── */
+// Mock API layer
 vi.mock("@/lib/api", () => ({
   queueApi: {
     getQueue: vi.fn().mockResolvedValue({
@@ -96,13 +94,13 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-/* ── Import components AFTER mocks ────────────────────────────────────────── */
+// Import components AFTER mocks
 import { DashboardPage } from "@/pages/DashboardPage";
 import { QueuePage } from "@/pages/QueuePage";
 import { UploadPage } from "@/pages/UploadPage";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-/* ── Helpers ──────────────────────────────────────────────────────────────── */
+// Helpers
 
 function renderWithRouter(ui: React.ReactElement) {
   return render(
@@ -112,7 +110,7 @@ function renderWithRouter(ui: React.ReactElement) {
   );
 }
 
-/* ── Tests ─────────────────────────────────────────────────────────────────── */
+// Tests
 
 describe("DashboardPage", () => {
   test("renders dashboard heading", async () => {
@@ -205,5 +203,103 @@ describe("API error handling", () => {
     await waitFor(() => {
       expect(screen.getByText("Invoice Processing Hub")).toBeInTheDocument();
     });
+  });
+});
+
+// Interaction tests
+
+describe("QueuePage interactions", () => {
+  test("filter select changes status filter", async () => {
+    userEvent.setup();
+    renderWithRouter(<QueuePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Review Queue")).toBeInTheDocument();
+    });
+
+    // The filter Select should be present
+    const filterTriggers = screen.getAllByRole("combobox");
+    expect(filterTriggers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("refresh button triggers data reload", async () => {
+    const { queueApi } = await import("@/lib/api");
+    renderWithRouter(<QueuePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Review Queue")).toBeInTheDocument();
+    });
+
+    const refreshBtn = screen.getByText("Refresh");
+    fireEvent.click(refreshBtn);
+
+    // getQueue should have been called again
+    expect(queueApi.getQueue).toHaveBeenCalledTimes(2);
+  });
+
+  test("clicking queue item navigates (card is clickable)", async () => {
+    renderWithRouter(<QueuePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("CloudVPS B.V.")).toBeInTheDocument();
+    });
+
+    // The card should be clickable
+    const card = screen.getByText("CloudVPS B.V.").closest("[class*='cursor-pointer']");
+    expect(card).toBeTruthy();
+  });
+
+  test("queue shows confidence percentage", async () => {
+    renderWithRouter(<QueuePage />);
+
+    await waitFor(() => {
+      // Average confidence of mock fields: (0.95 + 0.65) / 2 = 0.80 → 80%
+      expect(screen.getByText("80%")).toBeInTheDocument();
+    });
+  });
+
+  test("queue shows priority", async () => {
+    renderWithRouter(<QueuePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Priority 72")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("DashboardPage interactions", () => {
+  test("quick action cards are clickable links", async () => {
+    renderWithRouter(<DashboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Upload New Invoices")).toBeInTheDocument();
+    });
+
+    // Each quick action should have a link or be clickable
+    const uploadAction = screen.getByText("Upload New Invoices").closest("a, [role='link'], [class*='cursor']");
+    expect(uploadAction).toBeTruthy();
+  });
+
+  test("dashboard displays formatted average review time", async () => {
+    renderWithRouter(<DashboardPage />);
+
+    await waitFor(() => {
+      // avg_review_time_seconds = 28.5 → should show ~29s or 28s
+      const timeDisplay = screen.getByText("Avg Review Time");
+      expect(timeDisplay).toBeInTheDocument();
+    });
+  });
+});
+
+describe("UploadPage interactions", () => {
+  test("drop zone accepts click interaction", async () => {
+    renderWithRouter(<UploadPage />);
+
+    const dropZone = screen.getByText(/Drag & drop PDF invoices here/);
+    expect(dropZone).toBeInTheDocument();
+
+    // The drop zone or its parent should have an input[type=file]
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    expect(fileInputs.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -10,11 +10,7 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Connection pool (singleton) ───────────────────────────────────────────────
-
 _pool: asyncpg.Pool | None = None
-
-# ── Schema DDL ────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -23,7 +19,7 @@ CREATE TABLE IF NOT EXISTS documents (
     original_filename TEXT NOT NULL,
     mime_type        TEXT NOT NULL DEFAULT 'application/pdf',
     status           TEXT NOT NULL DEFAULT 'queued'
-                     CHECK(status IN ('queued','processing','completed','failed','duplicate')),
+                     CHECK(status IN ('queued','processing','completed','failed','duplicate','review_pending')),
     task_id          TEXT,
     error_message    TEXT,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
@@ -107,7 +103,7 @@ DO $$ BEGIN
         BEGIN
             ALTER TABLE documents DROP CONSTRAINT documents_status_check;
             ALTER TABLE documents ADD CONSTRAINT documents_status_check
-                CHECK(status IN ('queued','processing','completed','failed','duplicate'));
+                CHECK(status IN ('queued','processing','completed','failed','duplicate','review_pending'));
         EXCEPTION WHEN OTHERS THEN NULL;
         END;
     END IF;

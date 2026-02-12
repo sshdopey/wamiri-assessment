@@ -3,6 +3,10 @@
 Collects processing metrics, queue health, and SLA compliance data.
 Exposes a /metrics endpoint for Prometheus scraping and periodically
 snapshots metrics to disk.
+
+Uses a sliding time-window (default 1 hour) for derived metrics so that
+old data points are automatically evicted instead of accumulating without
+bound.
 """
 
 from __future__ import annotations
@@ -10,16 +14,41 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
 from prometheus_client import Counter, Gauge, Histogram
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Prometheus metrics ────────────────────────────────────────────────────────
+# Sliding window size in seconds (1 hour)
+_WINDOW_SECONDS = 3600
+
+# Load SLA definitions from YAML
+
+_SLA_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "configs" / "sla_definitions.yaml"
+)
+
+
+def _load_sla_config() -> list[dict]:
+    """Load SLA definitions from YAML config. Falls back to empty list."""
+    try:
+        with open(_SLA_CONFIG_PATH) as f:
+            data = yaml.safe_load(f)
+            return data.get("slas", [])
+    except FileNotFoundError:
+        logger.warning(
+            "SLA config not found at %s — using built-in defaults", _SLA_CONFIG_PATH
+        )
+        return []
+
+
+# Prometheus metrics
 
 # Processing
 documents_processed = Counter(
@@ -79,8 +108,7 @@ sla_breach_percent = Gauge(
     "Percentage of SLA breaches",
 )
 
-
-# ── SLA Definitions ──────────────────────────────────────────────────────────
+# SLA Definitions
 
 
 class SLADefinition:
@@ -109,30 +137,56 @@ class SLADefinition:
             return current_value < self.threshold
 
 
-# Default SLA definitions matching the assessment requirements
-DEFAULT_SLAS = [
-    SLADefinition("Latency", "p95_latency_seconds", 30.0, "lt", 5, "critical"),
-    SLADefinition("Throughput", "docs_per_hour", 4500, "gt", 15, "warning"),
-    SLADefinition("Error Rate", "error_rate_percent", 1.0, "lt", 5, "critical"),
-    SLADefinition("Queue Depth", "review_queue_depth", 500, "lt", 5, "warning"),
-    SLADefinition("SLA Breach", "sla_breach_percent", 0.1, "lt", 60, "critical"),
-]
+# Load from YAML, fall back to built-in defaults
+_yaml_slas = _load_sla_config()
 
+if _yaml_slas:
+    DEFAULT_SLAS = [
+        SLADefinition(
+            name=s["name"],
+            metric_name=s["metric"],
+            threshold=float(s["threshold"]),
+            comparison=s["comparison"],
+            window_minutes=int(s["window_minutes"]),
+            severity=s["severity"],
+        )
+        for s in _yaml_slas
+    ]
+    logger.info("Loaded %d SLA definitions from YAML config", len(DEFAULT_SLAS))
+else:
+    DEFAULT_SLAS = [
+        SLADefinition("Latency", "p95_latency_seconds", 30.0, "lt", 5, "critical"),
+        SLADefinition("Throughput", "docs_per_hour", 4500, "gt", 15, "warning"),
+        SLADefinition("Error Rate", "error_rate_percent", 1.0, "lt", 5, "critical"),
+        SLADefinition("Queue Depth", "review_queue_depth", 500, "lt", 5, "warning"),
+        SLADefinition("SLA Breach", "sla_breach_percent", 0.1, "lt", 60, "critical"),
+    ]
 
-# ── Monitoring Service ───────────────────────────────────────────────────────
+# Monitoring Service
 
 
 class MonitoringService:
-    """Collects, evaluates, and persists metrics and SLA checks."""
+    """Collects, evaluates, and persists metrics and SLA checks.
+
+    Uses a sliding time-window (deque) for processing times so that
+    metrics are always computed over the most recent hour instead of
+    accumulating unbounded data.
+    """
 
     def __init__(self) -> None:
-        self._processing_times: list[float] = []
+        # Sliding window: deque of (timestamp, duration) tuples
+        self._processing_window: deque[tuple[float, float]] = deque()
         self._window_start = time.time()
         self._processed_count = 0
         self._error_count = 0
+        # Track actual queue depth (updated by update_queue_depth)
+        self._current_queue_depth: int = 0
+        # Track SLA breach counts
+        self._sla_total_checks: int = 0
+        self._sla_breach_count: int = 0
         self.sla_definitions = DEFAULT_SLAS
 
-    # ── Record events ─────────────────────────────────────────────────────
+    # Record events
 
     def record_processing(
         self,
@@ -147,7 +201,10 @@ class MonitoringService:
         processing_duration.observe(duration_seconds)
         extraction_confidence.observe(confidence)
 
-        self._processing_times.append(duration_seconds)
+        now = time.time()
+        self._processing_window.append((now, duration_seconds))
+        self._evict_old_entries(now)
+
         self._processed_count += 1
         if not success:
             self._error_count += 1
@@ -157,7 +214,10 @@ class MonitoringService:
 
         logger.debug(
             "Recorded processing: doc=%s duration=%.1fs confidence=%.2f status=%s",
-            document_id, duration_seconds, confidence, status,
+            document_id,
+            duration_seconds,
+            confidence,
+            status,
         )
 
     def record_review(self, duration_seconds: float) -> None:
@@ -165,11 +225,12 @@ class MonitoringService:
         review_duration.observe(duration_seconds)
 
     def update_queue_depth(self, pending: int, in_review: int) -> None:
-        """Update queue depth gauges."""
+        """Update queue depth gauges and internal tracking."""
         queue_depth.labels(status="pending").set(pending)
         queue_depth.labels(status="in_review").set(in_review)
+        self._current_queue_depth = pending + in_review
 
-    # ── SLA evaluation ────────────────────────────────────────────────────
+    # SLA evaluation
 
     def check_slas(self) -> list[dict]:
         """Evaluate all SLA definitions and return breaches."""
@@ -178,7 +239,9 @@ class MonitoringService:
 
         for sla in self.sla_definitions:
             value = current_metrics.get(sla.metric_name, 0)
+            self._sla_total_checks += 1
             if sla.is_breached(value):
+                self._sla_breach_count += 1
                 breach = {
                     "sla": sla.name,
                     "metric": sla.metric_name,
@@ -191,12 +254,21 @@ class MonitoringService:
                 sla_breaches.labels(severity=sla.severity).inc()
                 logger.warning(
                     "SLA BREACH: %s — %s=%.2f (threshold=%.2f) [%s]",
-                    sla.name, sla.metric_name, value, sla.threshold, sla.severity,
+                    sla.name,
+                    sla.metric_name,
+                    value,
+                    sla.threshold,
+                    sla.severity,
                 )
+
+        # Update breach-rate gauge
+        if self._sla_total_checks > 0:
+            rate = (self._sla_breach_count / self._sla_total_checks) * 100
+            sla_breach_percent.set(round(rate, 2))
 
         return breaches
 
-    # ── Metrics snapshot ──────────────────────────────────────────────────
+    # Metrics snapshot
 
     def save_snapshot(self) -> Path:
         """Persist current metrics to a JSON file in the metrics directory."""
@@ -209,7 +281,9 @@ class MonitoringService:
             "sla_breaches": self.check_slas(),
         }
 
-        filename = f"metrics_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        filename = (
+            f"metrics_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        )
         path = metrics_dir / filename
         with open(path, "w") as f:
             json.dump(snapshot, f, indent=2)
@@ -221,20 +295,25 @@ class MonitoringService:
         """Return metrics suitable for the dashboard API."""
         return self._get_current_metrics()
 
-    # ── Internal ──────────────────────────────────────────────────────────
+    # Internal
 
     def _update_derived_metrics(self) -> None:
-        """Recompute derived gauges (P95, throughput, error rate)."""
+        """Recompute derived gauges (P95, throughput, error rate) from sliding window."""
+        now = time.time()
+        self._evict_old_entries(now)
+
+        durations = [d for _, d in self._processing_window]
+
         # P95 latency
-        if self._processing_times:
-            sorted_times = sorted(self._processing_times)
+        if durations:
+            sorted_times = sorted(durations)
             idx = int(len(sorted_times) * 0.95)
             p95 = sorted_times[min(idx, len(sorted_times) - 1)]
             p95_latency.set(p95)
 
-        # Throughput (docs/hour)
-        elapsed_hours = max((time.time() - self._window_start) / 3600, 0.001)
-        rate = self._processed_count / elapsed_hours
+        # Throughput (docs/hour) — based on window size
+        window_hours = max(_WINDOW_SECONDS / 3600, 0.001)
+        rate = len(durations) / window_hours
         documents_per_hour.set(round(rate, 1))
 
         # Error rate
@@ -242,15 +321,30 @@ class MonitoringService:
             err = (self._error_count / self._processed_count) * 100
             error_rate.set(round(err, 2))
 
+    def _evict_old_entries(self, now: float) -> None:
+        """Remove entries older than the sliding window."""
+        cutoff = now - _WINDOW_SECONDS
+        while self._processing_window and self._processing_window[0][0] < cutoff:
+            self._processing_window.popleft()
+
     def _get_current_metrics(self) -> dict:
         """Build a dict of current metric values."""
-        elapsed_hours = max((time.time() - self._window_start) / 3600, 0.001)
+        now = time.time()
+        self._evict_old_entries(now)
 
-        # P95
+        elapsed_hours = max((now - self._window_start) / 3600, 0.001)
+        durations = [d for _, d in self._processing_window]
+
+        # P95 from sliding window
         p95 = 0.0
-        if self._processing_times:
-            s = sorted(self._processing_times)
+        if durations:
+            s = sorted(durations)
             p95 = s[int(len(s) * 0.95)] if len(s) > 1 else s[0]
+
+        # SLA breach rate (real, not hardcoded)
+        breach_pct = 0.0
+        if self._sla_total_checks > 0:
+            breach_pct = (self._sla_breach_count / self._sla_total_checks) * 100
 
         return {
             "p95_latency_seconds": round(p95, 2),
@@ -258,8 +352,8 @@ class MonitoringService:
             "error_rate_percent": round(
                 (self._error_count / max(self._processed_count, 1)) * 100, 2
             ),
-            "review_queue_depth": 0,  # updated externally
-            "sla_breach_percent": 0.0,
+            "review_queue_depth": self._current_queue_depth,
+            "sla_breach_percent": round(breach_pct, 2),
             "total_processed": self._processed_count,
             "total_errors": self._error_count,
             "uptime_hours": round(elapsed_hours, 2),

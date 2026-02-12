@@ -17,16 +17,20 @@ dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.12.0",
     "python-multipart>=0.0.22",
+    "pyyaml>=6.0",
     "uvicorn>=0.40.0",
 ]
 
 [dependency-groups]
 dev = [
     "aiosqlite>=0.22.1",
+    "black>=26.1.0",
     "httpx>=0.28.1",
+    "isort>=7.0.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
+    "ruff>=0.15.0",
     "testing.postgresql>=1.3.0; sys_platform != 'win32'",
 ]
 
@@ -34,3 +38,10 @@ dev = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+
+[tool.ruff]
+# Enable isort behavior
+lint.select = ["I"] 
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

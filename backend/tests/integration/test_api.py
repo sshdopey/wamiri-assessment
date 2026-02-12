@@ -23,7 +23,7 @@ async def client():
         yield ac
 
 
-# ── Queue Endpoints ──────────────────────────────────────────────────────────
+# Queue Endpoints
 
 
 class TestQueueAPI:
@@ -61,7 +61,7 @@ class TestQueueAPI:
         assert resp.status_code == 409
 
 
-# ── Stats Endpoint ───────────────────────────────────────────────────────────
+# Stats Endpoint
 
 
 class TestStatsAPI:
@@ -77,7 +77,7 @@ class TestStatsAPI:
         assert "sla_compliance_percent" in data
 
 
-# ── Health Endpoint ──────────────────────────────────────────────────────────
+# Health Endpoint
 
 
 class TestHealth:
@@ -88,7 +88,7 @@ class TestHealth:
         assert resp.json()["status"] == "ok"
 
 
-# ── Upload Endpoint ──────────────────────────────────────────────────────────
+# Upload Endpoint
 
 
 class TestUpload:
@@ -102,12 +102,14 @@ class TestUpload:
         assert resp.status_code == 400
 
 
-# ── Review Workflow ──────────────────────────────────────────────────────────
+# Review Workflow
 
 
 class TestReviewWorkflow:
     @pytest.mark.asyncio
-    async def test_full_review_cycle(self, client: AsyncClient, sample_extraction_result):
+    async def test_full_review_cycle(
+        self, client: AsyncClient, sample_extraction_result
+    ):
         """Create item → claim → approve → verify status."""
         from src.services.review_queue_service import ReviewQueueService
 
@@ -131,7 +133,9 @@ class TestReviewWorkflow:
         assert resp.json()["status"] == "approved"
 
     @pytest.mark.asyncio
-    async def test_double_claim_rejected(self, client: AsyncClient, sample_extraction_result):
+    async def test_double_claim_rejected(
+        self, client: AsyncClient, sample_extraction_result
+    ):
         """Second claim on same item returns 409."""
         from src.services.review_queue_service import ReviewQueueService
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
   BarChart3,
   Clock,
@@ -15,15 +15,13 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { queueApi } from "@/lib/api";
-import type { QueueStats } from "@/lib/types";
 import { useUploadTracking } from "@/lib/upload-tracking";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useReviewStore } from "@/lib/store";
 
 export function DashboardPage() {
-  const [stats, setStats] = useState<QueueStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { stats, loading, startPolling, stopPolling } = useReviewStore();
   const navigate = useNavigate();
   const { uploads } = useUploadTracking();
   const processingCount = uploads.filter(
@@ -31,16 +29,9 @@ export function DashboardPage() {
   ).length;
 
   useEffect(() => {
-    let mounted = true;
-    queueApi
-      .getStats()
-      .then((data) => mounted && setStats(data))
-      .catch(() => mounted && setStats(null))
-      .finally(() => mounted && setLoading(false));
-    return () => {
-      mounted = false;
-    };
-  }, []);
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
 
   const metrics = stats
     ? [
@@ -90,8 +81,7 @@ export function DashboardPage() {
     : [];
 
   return (
-    <div className="p-6 lg:p-8 space-y-8 max-w-7xl mx-auto">
-      {/* ── Hero / App purpose ────────────────────────────────────── */}
+    <div className="p-6 lg:p-8 space-y-8 max-w-7xl mx-auto" role="main" aria-label="Dashboard">
       <div className="rounded-xl border bg-gradient-to-br from-primary/5 via-background to-blue-500/5 p-6 lg:p-8">
         <h2 className="text-2xl font-bold tracking-tight mb-2">
           Invoice Processing Hub
@@ -136,7 +126,7 @@ export function DashboardPage() {
           ].map((step, i) => (
             <div key={i} className="flex items-start gap-3">
               <div className={cn("rounded-lg p-2 shrink-0", step.bg)}>
-                <step.icon className={cn("h-4 w-4", step.color)} />
+                <step.icon className={cn("h-4 w-4", step.color)} aria-hidden="true" />
               </div>
               <div>
                 <p className="text-sm font-semibold">{step.title}</p>
@@ -147,8 +137,8 @@ export function DashboardPage() {
         </div>
 
         <div className="flex gap-3 mt-6">
-          <Button onClick={() => navigate("/upload")}>
-            <Upload className="h-4 w-4 mr-1.5" />
+          <Button onClick={() => navigate("/upload")} aria-label="Upload invoices">
+            <Upload className="h-4 w-4 mr-1.5" aria-hidden="true" />
             Upload Invoices
           </Button>
           {stats && stats.queue_depth > 0 && (
@@ -160,9 +150,8 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* ── Processing banner ─────────────────────────────────────── */}
       {processingCount > 0 && (
-        <Card className="border-blue-200 bg-blue-50/60 dark:bg-blue-950/20">
+        <Card className="border-blue-200 bg-blue-50/60 dark:bg-blue-950/20" role="status" aria-label="AI processing in progress">
           <CardContent className="py-3 px-5 flex items-center gap-3">
             <div className="rounded-full bg-blue-500/10 p-2">
               <Sparkles className="h-4 w-4 text-blue-600 animate-pulse" />
@@ -187,8 +176,7 @@ export function DashboardPage() {
         </Card>
       )}
 
-      {/* ── KPI cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" role="region" aria-label="Key metrics">
         {loading
           ? Array.from({ length: 4 }).map((_, i) => (
               <Card key={i}>
@@ -222,11 +210,14 @@ export function DashboardPage() {
             ))}
       </div>
 
-      {/* ── Quick actions ─────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4" role="region" aria-label="Quick actions">
         <Card
           className="cursor-pointer hover:shadow-md transition-all hover:border-primary/30 group"
           onClick={() => navigate("/upload")}
+          role="link"
+          tabIndex={0}
+          aria-label="Upload new invoices"
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate("/upload"); }}
         >
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -246,6 +237,10 @@ export function DashboardPage() {
         <Card
           className="cursor-pointer hover:shadow-md transition-all hover:border-primary/30 group"
           onClick={() => navigate("/queue")}
+          role="link"
+          tabIndex={0}
+          aria-label="Review pending items"
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate("/queue"); }}
         >
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -267,6 +262,10 @@ export function DashboardPage() {
         <Card
           className="cursor-pointer hover:shadow-md transition-all hover:border-primary/30 group"
           onClick={() => navigate("/documents")}
+          role="link"
+          tabIndex={0}
+          aria-label="View all documents"
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate("/documents"); }}
         >
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">

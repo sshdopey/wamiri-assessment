@@ -18,8 +18,7 @@ from src.models.schemas import (
     ReviewSubmission,
 )
 
-
-# ── Idempotency ──────────────────────────────────────────────────────────────
+# Idempotency
 
 
 class TestIdempotency:
@@ -78,7 +77,7 @@ class TestIdempotency:
         assert h1 == h2
 
 
-# ── Field Preservation / Locking ─────────────────────────────────────────────
+# Field Preservation / Locking
 
 
 class TestFieldLocking:
@@ -123,7 +122,7 @@ class TestFieldLocking:
     @pytest.mark.asyncio
     async def test_correction_creates_audit_trail(self, sample_extraction_result):
         """Every correction must be recorded in the audit_log table."""
-        from src.services.database import init_db, get_db, release_db
+        from src.services.database import get_db, init_db, release_db
         from src.services.review_queue_service import ReviewQueueService
 
         await init_db()
@@ -149,7 +148,7 @@ class TestFieldLocking:
             await release_db(db)
 
 
-# ── Validation Logic ─────────────────────────────────────────────────────────
+# Validation Logic
 
 
 class TestValidation:
@@ -178,17 +177,17 @@ class TestValidation:
         with pytest.raises(Exception):
             FieldConfidence(field_name="x", confidence=1.5)
 
-    def test_extraction_result_serialisation_roundtrip(
-        self, sample_extraction_result
-    ):
+    def test_extraction_result_serialisation_roundtrip(self, sample_extraction_result):
         """Serialise to JSON and back without data loss."""
         json_str = sample_extraction_result.model_dump_json()
         restored = ExtractionResult.model_validate_json(json_str)
         assert restored.document_id == sample_extraction_result.document_id
-        assert restored.overall_confidence == sample_extraction_result.overall_confidence
+        assert (
+            restored.overall_confidence == sample_extraction_result.overall_confidence
+        )
 
 
-# ── Priority Calculation ─────────────────────────────────────────────────────
+# Priority Calculation
 
 
 class TestPriorityCalculation:
@@ -203,6 +202,7 @@ class TestPriorityCalculation:
 
     def test_urgent_sla_gets_high_priority(self):
         from datetime import datetime, timedelta, timezone
+
         from src.services.review_queue_service import calculate_priority
 
         far_sla = datetime.now(timezone.utc) + timedelta(hours=20)

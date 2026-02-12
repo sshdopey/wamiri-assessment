@@ -52,10 +52,22 @@ class TestDualFormatConsistency:
         names = table.schema.names
 
         expected = [
-            "document_id", "filename", "vendor", "invoice_number",
-            "date", "due_date", "subtotal", "tax_rate", "tax_amount",
-            "total", "currency", "num_line_items", "line_items_json",
-            "confidence_score", "extracted_at", "content_hash",
+            "document_id",
+            "filename",
+            "vendor",
+            "invoice_number",
+            "date",
+            "due_date",
+            "subtotal",
+            "tax_rate",
+            "tax_amount",
+            "total",
+            "currency",
+            "num_line_items",
+            "line_items_json",
+            "confidence_score",
+            "extracted_at",
+            "content_hash",
         ]
         for col in expected:
             assert col in names, f"Missing column: {col}"

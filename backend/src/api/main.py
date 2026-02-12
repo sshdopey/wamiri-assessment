@@ -23,14 +23,33 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
+TAG_METADATA = [
+    {
+        "name": "Documents",
+        "description": "Upload, list, preview, and download processed documents.",
+    },
+    {
+        "name": "Review Queue",
+        "description": "Browse, claim, and submit human-review decisions on extracted invoices.",
+    },
+    {
+        "name": "Dashboard",
+        "description": "Aggregated statistics for the processing dashboard.",
+    },
+    {
+        "name": "Monitoring",
+        "description": "Prometheus-compatible metrics for operational observability.",
+    },
+]
+
 app = FastAPI(
-    title="Document Processing API",
+    title="Wamiri Invoices API",
     description="AI-powered invoice extraction & human review platform",
     version="1.0.0",
     lifespan=lifespan,
+    openapi_tags=TAG_METADATA,
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -39,7 +58,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routes ────────────────────────────────────────────────────────────────────
 app.include_router(router, prefix="/api")
 
 

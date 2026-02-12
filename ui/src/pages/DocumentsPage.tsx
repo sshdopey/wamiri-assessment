@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   FileText,
@@ -7,7 +7,6 @@ import {
   ArrowUpDown,
   Eye,
   Download,
-  RefreshCw,
   Inbox,
   Loader2,
   Sparkles,
@@ -17,6 +16,7 @@ import {
   Image,
   Copy,
   History,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,7 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { documentApi, queueApi } from "@/lib/api";
+import { documentApi } from "@/lib/api";
 import type {
   TrackedDocument,
   DocumentTrackingStatus,
@@ -48,8 +48,9 @@ import type {
 } from "@/lib/types";
 import { getDocumentDisplayName, getDocumentSubtitle } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useReviewStore } from "@/lib/store";
 
-/* ── Review status badge config ───────────────────────────────────────── */
+// Review status badge config
 
 const reviewStatusConfig: Record<
   ReviewStatus,
@@ -65,7 +66,7 @@ const reviewStatusConfig: Record<
   rejected: { label: "Rejected", variant: "destructive" },
 };
 
-/* ── Upload lifecycle status badge config ─────────────────────────────── */
+// Upload lifecycle status badge config
 
 const uploadStatusConfig: Record<
   DocumentTrackingStatus,
@@ -109,7 +110,7 @@ const uploadStatusConfig: Record<
   },
 };
 
-/* ── Helpers ───────────────────────────────────────────────────────────── */
+// Helpers
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -136,91 +137,56 @@ function isImageMime(mime: string) {
   return mime.startsWith("image/");
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
-   DocumentsPage — dual-view: "Documents" (review queue) + "Upload History"
-   ═══════════════════════════════════════════════════════════════════════ */
-
 export function DocumentsPage() {
   const navigate = useNavigate();
 
-  /* ── Review Queue state ───────────────────────────────────────────── */
-  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
-  const [reviewTotal, setReviewTotal] = useState(0);
-  const [reviewLoading, setReviewLoading] = useState(true);
+  // Global store (auto-polling, cross-tab sync)
+  const {
+    queueItems: reviewItems,
+    total: reviewTotal,
+    loading: storeLoading,
+    documents: uploads,
+    documentsTotal: uploadsTotal,
+    startPolling,
+    stopPolling,
+    fetchQueue,
+    fetchDocuments,
+    setDocumentsFilter,
+  } = useReviewStore();
+
+  // Local UI state (search/filter/sort — doesn't need to sync)
   const [reviewSearch, setReviewSearch] = useState("");
   const [reviewFilter, setReviewFilter] = useState<string>("all");
+  const [reviewerFilter, setReviewerFilter] = useState<string>("all");
   const [reviewSortBy, setReviewSortBy] = useState<"priority" | "sla" | "date">("date");
-
-  /* ── Upload History state ─────────────────────────────────────────── */
-  const [uploads, setUploads] = useState<TrackedDocument[]>([]);
-  const [uploadsTotal, setUploadsTotal] = useState(0);
-  const [uploadsLoading, setUploadsLoading] = useState(true);
   const [uploadsSearch, setUploadsSearch] = useState("");
   const [uploadsFilter, setUploadsFilter] = useState<string>("all");
-
   const [activeTab, setActiveTab] = useState("documents");
 
-  /* ── Fetch review queue ───────────────────────────────────────────── */
+  const reviewLoading = storeLoading && reviewItems.length === 0;
+  const uploadsLoading = storeLoading && uploads.length === 0;
 
-  const fetchReviewItems = useCallback(async () => {
-    setReviewLoading(true);
-    try {
-      const res = await queueApi.getQueue({
-        status: reviewFilter === "all" ? undefined : reviewFilter,
-        sort_by: reviewSortBy,
-        limit: 200,
-        offset: 0,
-      });
-      setReviewItems(res.items);
-      setReviewTotal(res.total);
-    } catch {
-      /* empty state */
-    } finally {
-      setReviewLoading(false);
-    }
-  }, [reviewFilter, reviewSortBy]);
-
-  /* ── Fetch upload history ─────────────────────────────────────────── */
-
-  const fetchUploads = useCallback(async () => {
-    setUploadsLoading(true);
-    try {
-      const res = await documentApi.list({
-        status: uploadsFilter === "all" ? undefined : uploadsFilter,
-        limit: 200,
-        offset: 0,
-      });
-      setUploads(res.items);
-      setUploadsTotal(res.total);
-    } catch {
-      /* empty state */
-    } finally {
-      setUploadsLoading(false);
-    }
-  }, [uploadsFilter]);
-
-  /* ── Always load both on mount so badge counts are available ─────── */
-
+  // Start/stop polling on mount
   useEffect(() => {
-    fetchReviewItems();
-  }, [fetchReviewItems]);
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
 
+  // Re-fetch queue when local filters change
   useEffect(() => {
-    fetchUploads();
-  }, [fetchUploads]);
+    const store = useReviewStore.getState();
+    store.setFilter("status", reviewFilter === "all" ? undefined : reviewFilter);
+    store.setFilter("sort_by", reviewSortBy);
+    store.setFilter("assigned_to", reviewerFilter === "all" ? undefined : reviewerFilter);
+  }, [reviewFilter, reviewSortBy, reviewerFilter]);
 
-  /* ── Auto-refresh uploads while active jobs exist ─────────────────── */
+  // Re-fetch uploads when status filter changes
   useEffect(() => {
-    if (activeTab !== "history") return;
-    const hasActive = uploads.some(
-      (d) => d.status === "processing" || d.status === "queued"
-    );
-    if (!hasActive) return;
-    const interval = setInterval(fetchUploads, 5000);
-    return () => clearInterval(interval);
-  }, [activeTab, uploads, fetchUploads]);
+    setDocumentsFilter(uploadsFilter === "all" ? undefined : uploadsFilter);
+    fetchDocuments();
+  }, [uploadsFilter, setDocumentsFilter, fetchDocuments]);
 
-  /* ── Filter helpers ───────────────────────────────────────────────── */
+  // Filter helpers
 
   const filteredReview = reviewSearch
     ? reviewItems.filter((item) => {
@@ -246,17 +212,13 @@ export function DocumentsPage() {
       })
     : uploads;
 
-  /* ── Confidence helper ────────────────────────────────────────────── */
+  // Confidence helper
   const getConfidence = (item: ReviewItem) => {
     if (!item.fields?.length) return null;
     const avg =
       item.fields.reduce((s, f) => s + f.confidence, 0) / item.fields.length;
     return Math.round(avg * 100);
   };
-
-  /* ══════════════════════════════════════════════════════════════════════
-     RENDER
-     ══════════════════════════════════════════════════════════════════════ */
 
   return (
     <div className="p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
@@ -271,21 +233,12 @@ export function DocumentsPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={
-            activeTab === "documents" ? fetchReviewItems : fetchUploads
-          }
-          disabled={
-            activeTab === "documents" ? reviewLoading : uploadsLoading
+          onClick={() =>
+            activeTab === "documents" ? fetchQueue() : fetchDocuments()
           }
         >
-          <RefreshCw
-            className={cn(
-              "h-4 w-4 mr-1.5",
-              (activeTab === "documents" ? reviewLoading : uploadsLoading) &&
-                "animate-spin"
-            )}
-          />
-          Refresh
+          <CheckCircle2 className="h-4 w-4 mr-1.5 text-green-500" />
+          Live
         </Button>
       </div>
 
@@ -349,6 +302,18 @@ export function DocumentsPage() {
                   <SelectItem value="rejected">Rejected</SelectItem>
                 </SelectContent>
               </Select>
+              <Select value={reviewerFilter} onValueChange={setReviewerFilter}>
+                <SelectTrigger className="w-44">
+                  <User className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+                  <SelectValue placeholder="Reviewer" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Reviewers</SelectItem>
+                  <SelectItem value="reviewer-1">Reviewer 1</SelectItem>
+                  <SelectItem value="reviewer-2">Reviewer 2</SelectItem>
+                  <SelectItem value="reviewer-3">Reviewer 3</SelectItem>
+                </SelectContent>
+              </Select>
               <Select value={reviewSortBy} onValueChange={(v) => setReviewSortBy(v as typeof reviewSortBy)}>
                 <SelectTrigger className="w-40">
                   <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
@@ -379,6 +344,7 @@ export function DocumentsPage() {
                     <TableHead className="w-10" />
                     <TableHead>Document</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="hidden md:table-cell">Assigned To</TableHead>
                     <TableHead className="hidden md:table-cell">Confidence</TableHead>
                     <TableHead className="hidden md:table-cell">Priority</TableHead>
                     <TableHead className="hidden lg:table-cell">Created</TableHead>
@@ -418,6 +384,18 @@ export function DocumentsPage() {
                         </TableCell>
                         <TableCell>
                           <Badge variant={sc.variant}>{sc.label}</Badge>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell">
+                          {item.assigned_to ? (
+                            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                              <div className="flex items-center gap-1 bg-muted px-2 py-1 rounded-full">
+                                <User className="h-3 w-3" />
+                                <span>{item.assigned_to.replace("reviewer-", "R")}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Unassigned</span>
+                          )}
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           {conf !== null ? (
@@ -652,10 +630,6 @@ export function DocumentsPage() {
     </div>
   );
 }
-
-/* ══════════════════════════════════════════════════════════════════════
-   Sub-components
-   ══════════════════════════════════════════════════════════════════════ */
 
 function UploadStatusSummary({ uploads }: { uploads: TrackedDocument[] }) {
   if (uploads.length === 0) return null;

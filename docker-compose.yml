@@ -2,7 +2,7 @@ name: wamiri-invoices
 
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     ports:
       - "6379:6379"
     volumes:
@@ -14,7 +14,7 @@ services:
       retries: 5
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     env_file:
       - ./backend/.env
     ports:
@@ -31,6 +31,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: wamiri-invoices-backend
     env_file:
       - ./backend/.env
     ports:
@@ -49,6 +50,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: wamiri-invoices-backend
     command: uv run celery -A src.tasks.celery_app worker --loglevel=info --concurrency=4
     env_file:
       - ./backend/.env
@@ -62,16 +64,61 @@ services:
       - ./documents:/app/documents
       - uploads:/app/uploads
 
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: wamiri-invoices-backend
+    command: uv run celery -A src.tasks.celery_app beat --loglevel=info
+    env_file:
+      - ./backend/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   ui:
     build:
       context: ./ui
       dockerfile: Dockerfile
+    image: wamiri-invoices-frontend
     ports:
       - "5173:80"
     depends_on:
       - api
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - api
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=wamiri
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
 volumes:
   redis_data:
   pg_data:
   uploads:
+  prometheus_data:
+  grafana_data:
