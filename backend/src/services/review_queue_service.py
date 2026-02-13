@@ -83,9 +83,9 @@ class ReviewQueueService:
         """Insert a new review item + extracted fields from an ExtractionResult."""
         item_id = _uuid()
         now = _utcnow()
-        sla_deadline = datetime.now(timezone.utc) + timedelta(
-            hours=settings.sla_default_hours
-        )
+        # SLA deadline is NOT set at creation — it starts when
+        # the reviewer clicks "Start Review" (claim_item).
+        sla_deadline = None
 
         priority = calculate_priority(
             confidence_avg=result.overall_confidence,

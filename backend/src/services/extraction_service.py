@@ -70,22 +70,6 @@ def _load_extraction_config() -> dict:
 _CONFIG: dict = _load_extraction_config()
 
 
-def get_field_config(field_name: str) -> dict | None:
-    """Look up config for a specific field from the YAML."""
-    for field_def in _CONFIG.get("fields", []):
-        if field_def.get("name") == field_name:
-            return field_def
-    return None
-
-
-def get_confidence_threshold(field_name: str) -> float:
-    """Get the confidence threshold for a field (from YAML or default 0.70)."""
-    cfg = get_field_config(field_name)
-    if cfg:
-        return cfg.get("confidence_threshold", 0.70)
-    return 0.70
-
-
 # Supported file types
 
 SUPPORTED_MIME_TYPES: dict[str, str] = {
@@ -128,24 +112,58 @@ class GeminiLineItem(BaseModel):
     total: float = Field(description="Line item total")
 
 
+class GeminiFieldWithConfidence(BaseModel):
+    """A single extracted field with AI-assessed confidence."""
+
+    value: str = Field(description="The extracted value as a string")
+    confidence: float = Field(
+        description=(
+            "Your confidence that this value is correct, from 0.0 to 1.0. "
+            "1.0 means you are certain. 0.5 means you are guessing. "
+            "Consider: is the text clearly legible? Could you misread a digit? "
+            "Is this field actually present on the invoice or are you inferring it?"
+        )
+    )
+
+
 class GeminiInvoiceSchema(BaseModel):
     """Invoice schema sent to Gemini for structured extraction."""
 
-    vendor: str = Field(description="Vendor / supplier company name")
-    invoice_number: str = Field(description="Invoice number or ID")
-    date: str = Field(description="Invoice date in YYYY-MM-DD format")
-    due_date: str = Field(
+    vendor: GeminiFieldWithConfidence = Field(
+        description="Vendor / supplier company name"
+    )
+    invoice_number: GeminiFieldWithConfidence = Field(
+        description="Invoice number or ID"
+    )
+    date: GeminiFieldWithConfidence = Field(
+        description="Invoice date in YYYY-MM-DD format"
+    )
+    due_date: GeminiFieldWithConfidence = Field(
         description="Payment due date in YYYY-MM-DD format, or empty string if not found"
     )
-    subtotal: float = Field(description="Subtotal before tax (0 if not found)")
-    tax_rate: float = Field(
-        description="Tax/VAT rate as percentage, e.g. 20.0 for 20%  (0 if not found)"
+    subtotal: GeminiFieldWithConfidence = Field(
+        description="Subtotal before tax as a number (0 if not found)"
     )
-    tax_amount: float = Field(description="Tax amount (0 if no tax)")
-    total: float = Field(description="Grand total including tax")
-    currency: str = Field(description="ISO 4217 currency code, e.g. USD, EUR, CHF")
+    tax_rate: GeminiFieldWithConfidence = Field(
+        description="Tax/VAT rate as percentage number, e.g. 20.0 for 20% (0 if not found)"
+    )
+    tax_amount: GeminiFieldWithConfidence = Field(
+        description="Tax amount as a number (0 if no tax)"
+    )
+    total: GeminiFieldWithConfidence = Field(
+        description="Grand total including tax as a number"
+    )
+    currency: GeminiFieldWithConfidence = Field(
+        description="ISO 4217 currency code, e.g. USD, EUR, CHF"
+    )
     line_items: list[GeminiLineItem] = Field(
         description="All line items on the invoice"
+    )
+    line_items_confidence: float = Field(
+        description=(
+            "Your overall confidence in the line items extraction from 0.0 to 1.0. "
+            "Consider: did you capture every line item? Are quantities and prices correct?"
+        )
     )
 
 
@@ -154,16 +172,28 @@ class GeminiInvoiceSchema(BaseModel):
 _EXTRACTION_PROMPT = """You are an expert invoice data-extraction assistant.
 
 Carefully examine this invoice document (it may be a PDF or an image) and
-extract ALL of the following fields.  If a field is not present, use a
-sensible default (empty string for text, 0 for numbers).
+extract ALL of the following fields.  If a field is not present on the
+document, use a sensible default (empty string for text, 0 for numbers).
+
+For EACH field, you must also provide a confidence score between 0.0 and 1.0
+reflecting how certain you are about that extraction:
+- 0.95-1.0: The value is clearly printed and unambiguous.
+- 0.80-0.94: High confidence but minor ambiguity (e.g. slightly blurry text).
+- 0.60-0.79: Moderate confidence — the value is partially visible or inferred.
+- 0.30-0.59: Low confidence — you are guessing or the field is not on the document.
+- 0.0-0.29: Very low confidence — the field is missing and you used a default.
 
 Rules:
 - Dates must be in YYYY-MM-DD format.
 - Currency must be an ISO 4217 code (USD, EUR, GBP, CHF, etc.).
-- tax_rate is a percentage (e.g. 20.0 means 20 %).
+- tax_rate is a percentage (e.g. 20.0 means 20%).
 - Include every single line item — do not truncate.
 - For multi-page invoices, merge all line items into one list.
 - Quantity should be an integer; round if necessary.
+- If a field (like tax or due_date) genuinely does not exist on the invoice,
+  set its value to default (0 or empty string) and give it a HIGH confidence
+  (0.85+) since you are confident it is absent — low confidence means you
+  think the field IS there but you cannot read it.
 
 Return a JSON object matching the provided schema exactly.
 """
@@ -180,128 +210,60 @@ def compute_file_hash(path: str | Path) -> str:
     return h.hexdigest()
 
 
+def _to_float(val: Any) -> float:
+    """Safely convert a string or numeric value to float."""
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            # Strip currency symbols, commas, whitespace
+            cleaned = re.sub(r"[^\d.\-]", "", val.strip())
+            return float(cleaned) if cleaned else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+    return 0.0
+
+
 # Confidence estimation
 
 
-def _estimate_confidence(invoice: GeminiInvoiceSchema) -> list[FieldConfidence]:
-    """Heuristic confidence scoring based on field completeness & validity.
-
-    Uses YAML-defined confidence thresholds as base scores. Penalises empty,
-    zero, or suspiciously short values. Applies cross-field validation from
-    the YAML config (e.g. total ≈ subtotal + tax_amount).
-    """
+def _build_field_confidences(invoice: GeminiInvoiceSchema) -> list[FieldConfidence]:
+    """Build FieldConfidence list directly from AI-provided confidence scores."""
+    header_fields = [
+        "vendor",
+        "invoice_number",
+        "date",
+        "due_date",
+        "subtotal",
+        "tax_rate",
+        "tax_amount",
+        "total",
+        "currency",
+    ]
     scores: list[FieldConfidence] = []
-
-    def _score(name: str, value: Any) -> FieldConfidence:
-        """Give a score based on YAML threshold, penalise empty / zero / suspicious."""
-        base = get_confidence_threshold(name)
-        conf = base
-        if value is None or value == "" or value == 0:
-            conf = 0.40
-        elif isinstance(value, str) and len(value) < 2:
-            conf = 0.60
-        # Validate against YAML rules
-        field_cfg = get_field_config(name)
-        if field_cfg and value and conf > 0.50:
-            validation = field_cfg.get("validation", {})
-            # Pattern check
-            pattern = validation.get("pattern")
-            if pattern and isinstance(value, str):
-                if not re.match(pattern, value):
-                    conf = min(conf, 0.55)
-            # Enum check
-            enum_vals = validation.get("enum")
-            if enum_vals and isinstance(value, str) and value not in enum_vals:
-                conf = min(conf, 0.50)
-            # Min/max for numeric
-            if isinstance(value, (int, float)):
-                min_val = validation.get("min")
-                max_val = validation.get("max")
-                if min_val is not None and value < min_val:
-                    conf = min(conf, 0.45)
-                if max_val is not None and value > max_val:
-                    conf = min(conf, 0.45)
-            # String length check
-            if isinstance(value, str):
-                min_len = validation.get("min_length")
-                max_len = validation.get("max_length")
-                if min_len is not None and len(value) < min_len:
-                    conf = min(conf, 0.50)
-                if max_len is not None and len(value) > max_len:
-                    conf = min(conf, 0.60)
-
-        return FieldConfidence(field_name=name, value=value, confidence=round(conf, 2))
-
-    scores.append(_score("vendor", invoice.vendor))
-    scores.append(_score("invoice_number", invoice.invoice_number))
-    scores.append(_score("date", invoice.date))
-    scores.append(_score("due_date", invoice.due_date))
-    scores.append(_score("subtotal", invoice.subtotal))
-    scores.append(_score("tax_rate", invoice.tax_rate))
-    scores.append(_score("tax_amount", invoice.tax_amount))
-    scores.append(_score("total", invoice.total))
-    scores.append(_score("currency", invoice.currency))
-
-    # Cross-field validation from YAML config
-    cross_rules = _CONFIG.get("validation", {}).get("cross_field", [])
-    for rule in cross_rules:
-        tolerance = rule.get("tolerance", 0.02)
-        rule_str = rule.get("rule", "")
-
-        # total ≈ subtotal + tax_amount
-        if "total" in rule_str and "subtotal" in rule_str and "tax_amount" in rule_str:
-            if invoice.subtotal and invoice.tax_amount and invoice.total:
-                expected = invoice.subtotal + invoice.tax_amount
-                if abs(expected - invoice.total) / max(invoice.total, 1) < tolerance:
-                    for s in scores:
-                        if s.field_name in ("total", "subtotal", "tax_amount"):
-                            s.confidence = min(1.0, s.confidence + 0.05)
-                else:
-                    for s in scores:
-                        if s.field_name in ("total", "subtotal", "tax_amount"):
-                            s.confidence = max(0.40, s.confidence - 0.10)
-
-        # sum(line_items.total) ≈ subtotal
-        if "line_items" in rule_str and "subtotal" in rule_str:
-            if invoice.line_items and invoice.subtotal:
-                li_sum = sum(li.total for li in invoice.line_items)
-                if (
-                    abs(li_sum - invoice.subtotal) / max(invoice.subtotal, 1)
-                    < tolerance
-                ):
-                    pass  # Line items handled below with boost
-                else:
-                    # Penalise slightly
-                    pass
-
-    # Line-item consistency
-    if invoice.line_items:
-        li_total = sum(li.total for li in invoice.line_items)
-        cross_tolerance = 0.05
-        for rule in cross_rules:
-            if "line_items" in rule.get("rule", ""):
-                cross_tolerance = rule.get("tolerance", 0.05)
-                break
-
-        if (
-            invoice.subtotal
-            and abs(li_total - invoice.subtotal) / max(invoice.subtotal, 1)
-            < cross_tolerance
-        ):
-            li_conf = 0.90
-        else:
-            li_conf = 0.70
+    for name in header_fields:
+        field_obj: GeminiFieldWithConfidence = getattr(invoice, name)
+        # Clamp confidence to [0, 1]
+        conf = max(0.0, min(1.0, field_obj.confidence))
         scores.append(
             FieldConfidence(
-                field_name="line_items",
-                value=[li.model_dump() for li in invoice.line_items],
-                confidence=round(li_conf, 2),
+                field_name=name,
+                value=field_obj.value,
+                confidence=round(conf, 2),
             )
         )
-    else:
-        scores.append(
-            FieldConfidence(field_name="line_items", value=[], confidence=0.50)
+
+    # Line items — use the AI's overall line_items_confidence
+    li_conf = max(0.0, min(1.0, invoice.line_items_confidence))
+    scores.append(
+        FieldConfidence(
+            field_name="line_items",
+            value=[li.model_dump() for li in invoice.line_items]
+            if invoice.line_items
+            else [],
+            confidence=round(li_conf, 2),
         )
+    )
 
     return scores
 
@@ -310,10 +272,7 @@ def _estimate_confidence(invoice: GeminiInvoiceSchema) -> list[FieldConfidence]:
 
 
 def _validate_extraction(invoice: GeminiInvoiceSchema) -> list[str]:
-    """Validate extracted data against YAML-defined rules.
-
-    Returns a list of validation warnings (empty = clean).
-    """
+    """Validate extracted data against YAML-defined rules."""
     warnings: list[str] = []
 
     # Check required fields
@@ -321,8 +280,16 @@ def _validate_extraction(invoice: GeminiInvoiceSchema) -> list[str]:
         "required_fields_for_approval", []
     )
     for field_name in required_for_approval:
-        value = getattr(invoice, field_name, None)
-        if not value or value == "" or value == 0:
+        field_obj = getattr(invoice, field_name, None)
+        if field_obj is None:
+            warnings.append(f"Required field '{field_name}' is missing")
+            continue
+        val = (
+            field_obj.value
+            if isinstance(field_obj, GeminiFieldWithConfidence)
+            else field_obj
+        )
+        if not val or val == "" or val == "0" or val == "0.0":
             warnings.append(f"Required field '{field_name}' is empty or zero")
 
     # Cross-field checks
@@ -332,13 +299,16 @@ def _validate_extraction(invoice: GeminiInvoiceSchema) -> list[str]:
         rule_str = rule.get("rule", "")
 
         if "total" in rule_str and "subtotal" in rule_str and "tax_amount" in rule_str:
-            if invoice.subtotal and invoice.tax_amount and invoice.total:
-                expected = invoice.subtotal + invoice.tax_amount
-                diff = abs(expected - invoice.total) / max(invoice.total, 1)
+            subtotal = _to_float(invoice.subtotal.value)
+            tax_amount = _to_float(invoice.tax_amount.value)
+            total = _to_float(invoice.total.value)
+            if subtotal and tax_amount and total:
+                expected = subtotal + tax_amount
+                diff = abs(expected - total) / max(total, 1)
                 if diff > tolerance:
                     warnings.append(
-                        f"Total ({invoice.total}) ≠ subtotal ({invoice.subtotal}) + "
-                        f"tax ({invoice.tax_amount}) — diff {diff:.1%}"
+                        f"Total ({total}) != subtotal ({subtotal}) + "
+                        f"tax ({tax_amount}) — diff {diff:.1%}"
                     )
 
     return warnings
@@ -438,15 +408,15 @@ class ExtractionService:
 
         # 4. Convert to domain model
         invoice_data = InvoiceData(
-            vendor=gemini_invoice.vendor,
-            invoice_number=gemini_invoice.invoice_number,
-            date=gemini_invoice.date,
-            due_date=gemini_invoice.due_date or None,
-            subtotal=gemini_invoice.subtotal,
-            tax_rate=gemini_invoice.tax_rate,
-            tax_amount=gemini_invoice.tax_amount,
-            total=gemini_invoice.total,
-            currency=gemini_invoice.currency,
+            vendor=gemini_invoice.vendor.value,
+            invoice_number=gemini_invoice.invoice_number.value,
+            date=gemini_invoice.date.value,
+            due_date=gemini_invoice.due_date.value or None,
+            subtotal=_to_float(gemini_invoice.subtotal.value),
+            tax_rate=_to_float(gemini_invoice.tax_rate.value),
+            tax_amount=_to_float(gemini_invoice.tax_amount.value),
+            total=_to_float(gemini_invoice.total.value),
+            currency=gemini_invoice.currency.value,
             line_items=[
                 LineItem(
                     item=li.item,
@@ -458,15 +428,15 @@ class ExtractionService:
             ],
         )
 
-        # 5. Confidence scores
-        field_confidences = _estimate_confidence(gemini_invoice)
+        # 5. Build confidence scores from AI response
+        field_confidences = _build_field_confidences(gemini_invoice)
         overall = (
             sum(fc.confidence for fc in field_confidences) / len(field_confidences)
             if field_confidences
             else 0.0
         )
 
-        # 6. Post-extraction validation against YAML rules
+        # 6. Post-extraction validation
         validation_warnings = _validate_extraction(gemini_invoice)
         if validation_warnings:
             logger.warning(
@@ -474,9 +444,6 @@ class ExtractionService:
                 document_id,
                 "; ".join(validation_warnings),
             )
-            # Penalise overall confidence if there are warnings
-            penalty = min(len(validation_warnings) * 0.03, 0.15)
-            overall = max(0.0, overall - penalty)
 
         elapsed = time.time() - t0
         content_hash = compute_file_hash(file_path)
