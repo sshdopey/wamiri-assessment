@@ -46,8 +46,8 @@ class LineItem(BaseModel):
 
     item: str = Field(..., description="Item description")
     quantity: int = Field(..., ge=0, description="Quantity")
-    unit_price: float = Field(..., ge=0, description="Unit price")
-    total: float = Field(..., ge=0, description="Line total")
+    unit_price: float = Field(..., description="Unit price")
+    total: float = Field(..., description="Line total")
 
 
 # Invoice Data (Gemini output schema)
