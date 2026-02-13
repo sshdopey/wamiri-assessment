@@ -4,8 +4,8 @@ Configuration
 - Broker:          Redis (redis://localhost:6379/0)
 - Result backend:  Redis (redis://localhost:6379/1)
 - Serializer:      JSON
-- Hard time limit: 300 s (5 min SLA)
-- Soft time limit: 270 s (4.5 min)
+- Hard time limit: 150 s (safety net)
+- Soft time limit: 120 s
 """
 
 from __future__ import annotations
@@ -286,7 +286,7 @@ def aggregate_batch_results(results: list) -> dict:
 @app.task(
     bind=True,
     name="tasks.process_document_dag",
-    max_retries=settings.max_retries,
+    max_retries=0,  # No Celery-level retries — the WorkflowExecutor handles step retries
     acks_late=True,
 )
 def process_document_dag_task(
@@ -359,12 +359,20 @@ def process_document_dag_task(
                 return cached_result.model_dump(mode="json")
 
         dag = build_document_processing_dag(document_id, file_path, stored_filename)
+
+        # Eager failure callback — writes "failed" to DB BEFORE retry sleep.
+        # This ensures the DB is always up-to-date even if SIGKILL fires
+        # during a retry sleep (hard time limit).
+        def _on_step_error(step_id: str, error: str) -> None:
+            _update_doc_status("failed", f"Step '{step_id}': {error}"[:500])
+
         executor = WorkflowExecutor(
             max_concurrency=4,
             rate_limiters={
-                "gemini_api": TokenBucketRateLimiter(rate_per_second=10.0, burst=5),
+                "gemini_api": TokenBucketRateLimiter(rate_per_second=15.0, burst=10),
             },
-            default_timeout=120.0,
+            default_timeout=30.0,
+            on_step_error=_on_step_error,
         )
 
         result = asyncio.run(executor.execute(dag, context={"file_path": file_path}))
@@ -424,10 +432,33 @@ def process_document_dag_task(
 
             return {"document_id": document_id, "status": "failed", "error": error_msg}
 
+    except SoftTimeLimitExceeded:
+        error_msg = "Processing timed out (soft limit)"
+        _update_doc_status("failed", error_msg)
+        logger.error("[dag-task] Soft time limit hit for %s", document_id)
+        try:
+            from src.services.monitoring_service import monitoring
+
+            monitoring.record_processing(
+                document_id, time.time() - t0, 0.0, success=False
+            )
+        except Exception:
+            pass
+        return {"document_id": document_id, "status": "failed", "error": error_msg}
+
     except Exception as exc:
-        _update_doc_status("failed", str(exc)[:500])
+        error_msg = str(exc)[:500]
+        _update_doc_status("failed", error_msg)
         logger.error("[dag-task] Exception processing %s: %s", document_id, exc)
-        raise self.retry(exc=exc, countdown=10)
+        try:
+            from src.services.monitoring_service import monitoring
+
+            monitoring.record_processing(
+                document_id, time.time() - t0, 0.0, success=False
+            )
+        except Exception:
+            pass
+        return {"document_id": document_id, "status": "failed", "error": error_msg}
 
 
 # Periodic: Release expired claims

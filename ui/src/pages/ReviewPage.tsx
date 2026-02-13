@@ -746,11 +746,11 @@ export function ReviewPage() {
                           "absolute -left-3.5 top-1.5 h-3 w-3 rounded-full border-2 border-background",
                           entry.action === "approve"
                             ? "bg-green-500"
-                            : entry.action === "reject"
+                            : entry.action === "reject" || entry.action === "rejection"
                               ? "bg-red-500"
-                              : entry.action === "correct"
+                              : entry.action === "correct" || entry.action === "correction"
                                 ? "bg-amber-500"
-                                : entry.action === "auto_assign" || entry.action === "claim"
+                                : entry.action === "auto_assign" || entry.action === "claim" || entry.action === "start_review"
                                   ? "bg-blue-500"
                                   : "bg-muted-foreground"
                         )}
@@ -761,9 +761,9 @@ export function ReviewPage() {
                           <div className="flex items-center gap-2">
                             <Badge
                               variant={
-                                entry.action === "approve"
+                                entry.action === "approve" || entry.action === "approval"
                                   ? "default"
-                                  : entry.action === "reject"
+                                  : entry.action === "reject" || entry.action === "rejection"
                                     ? "destructive"
                                     : "secondary"
                               }
@@ -798,6 +798,12 @@ export function ReviewPage() {
                               <p className="text-foreground">{entry.new_value}</p>
                             )}
                           </div>
+                        )}
+
+                        {!entry.field_name && entry.new_value && (
+                          <p className="mt-1.5 text-xs text-foreground italic">
+                            {entry.new_value}
+                          </p>
                         )}
                       </div>
                     </div>

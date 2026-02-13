@@ -41,6 +41,11 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     volumes:
       - ./backend/data:/app/data
       - ./documents:/app/documents
@@ -55,9 +60,7 @@ services:
     env_file:
       - ./backend/.env
     depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
+      api:
         condition: service_healthy
     volumes:
       - ./backend/data:/app/data
@@ -73,9 +76,7 @@ services:
     env_file:
       - ./backend/.env
     depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
+      api:
         condition: service_healthy
 
   ui:

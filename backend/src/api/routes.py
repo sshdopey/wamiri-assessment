@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from src.config import settings
@@ -60,8 +60,11 @@ def _get_file_extension(filename: str) -> str | None:
 
 
 @router.post("/documents/upload", response_model=UploadResponse, tags=["Documents"])
-async def upload_document(file: UploadFile = File(...)):
-    """Accept a PDF or image, persist it, track in DB, and trigger Celery extraction."""
+async def upload_document(request: Request, file: UploadFile = File(...)):
+    """Accept a PDF or image, persist it, track in DB, and trigger Celery extraction.
+
+    Rate limit: 30 uploads per minute per IP (enforced by slowapi middleware).
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 

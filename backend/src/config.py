@@ -43,10 +43,14 @@ class Settings(BaseSettings):
 
     # Processing
     max_concurrent_tasks: int = 10
-    task_time_limit: int = 300
-    task_soft_time_limit: int = 270
-    max_retries: int = 3
-    retry_backoff_base: int = 10  # seconds
+    task_time_limit: int = (
+        150  # hard kill safety net (generous — executor handles retries)
+    )
+    task_soft_time_limit: int = (
+        120  # soft limit exception (30s buffer before hard kill)
+    )
+    max_retries: int = 2
+    retry_backoff_base: int = 3  # seconds
 
     # SLA thresholds
     sla_p95_latency_seconds: float = 30.0

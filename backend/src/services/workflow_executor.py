@@ -349,10 +349,12 @@ class WorkflowExecutor:
         max_concurrency: int = 4,
         rate_limiters: dict[str, TokenBucketRateLimiter] | None = None,
         default_timeout: float = 300.0,
+        on_step_error: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._rate_limiters = rate_limiters or {}
         self._default_timeout = default_timeout
+        self._on_step_error = on_step_error
 
     async def execute(
         self,
@@ -495,8 +497,24 @@ class WorkflowExecutor:
                     logger.warning(
                         "Step '%s' timed out (attempt %d)", step_id, attempt + 1
                     )
+                    # Eagerly write failure to DB before retry sleep (survives SIGKILL)
+                    if self._on_step_error:
+                        self._on_step_error(step_id, last_error)
 
                 except Exception as exc:
+                    # Celery SoftTimeLimitExceeded — don't retry, propagate immediately
+                    if type(exc).__name__ == "SoftTimeLimitExceeded":
+                        error_msg = "Processing timed out (soft limit)"
+                        results[step_id] = StepResult(
+                            step_id=step_id,
+                            status=StepStatus.FAILED,
+                            error=error_msg,
+                            duration_seconds=round(time.monotonic() - t0, 3),
+                        )
+                        if self._on_step_error:
+                            self._on_step_error(step_id, error_msg)
+                        raise  # Let Celery handle it at the task level
+
                     last_error = str(exc)
                     retries = attempt
                     logger.warning(
@@ -505,6 +523,9 @@ class WorkflowExecutor:
                         attempt + 1,
                         exc,
                     )
+                    # Eagerly write failure to DB before retry sleep (survives SIGKILL)
+                    if self._on_step_error:
+                        self._on_step_error(step_id, last_error)
 
                 # Exponential backoff with jitter before next retry
                 if attempt < step.max_retries:
@@ -575,10 +596,10 @@ def build_document_processing_dag(
         "extract",
         extract,
         depends_on=[],
-        max_retries=3,
-        retry_backoff_base=10.0,
+        max_retries=1,
+        retry_backoff_base=2.0,
         resource_tag="gemini_api",
-        timeout_seconds=120.0,
+        timeout_seconds=60.0,
     )
 
     # Step 2a: Save Parquet (parallel with JSON)

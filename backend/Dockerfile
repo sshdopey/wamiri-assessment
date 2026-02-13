@@ -2,9 +2,9 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install system dependencies (libpq for psycopg2)
+# Install system dependencies (libpq for psycopg2, curl for healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev \
+    libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
